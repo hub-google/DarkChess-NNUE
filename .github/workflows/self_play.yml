@@ -3,7 +3,7 @@ name: Distributed Self-Play Data Generation
 on:
   schedule:
     - cron: '0 */6 * * *' # Run every 6 hours
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch: {}
 
 jobs:
   self-play-worker:
