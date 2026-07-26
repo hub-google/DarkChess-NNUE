@@ -1,47 +1,50 @@
-name: NNUE Autonomous Training Pipeline
+name: 🤖 NNUE 神經網路自主訓練與評測流程 (Autonomous Training Pipeline)
 
+# 觸發條件：每天午夜定時執行，或手動點擊觸發
 on:
   schedule:
-    - cron: '0 0 * * *' # Run nightly at midnight
-  workflow_dispatch: # Allow manual trigger
+    - cron: '0 0 * * *' # 每天 UTC 00:00 (台灣時間 08:00) 自動執行
+  workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
 
 jobs:
   train-and-validate:
+    name: 🏋️ 模型訓練與 SPRT 棋力對決評測
     runs-on: ubuntu-latest
     permissions:
       contents: write
     
     steps:
-    - name: Checkout Code
+    - name: 📥 步驟 1：檢出專案程式碼 (Checkout Code)
       uses: actions/checkout@v4
       
-    - name: Set up Python
+    - name: 🐍 步驟 2：設定 Python 執行環境 (Python 3.10)
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
         
-    - name: Install Dependencies
+    - name: 📦 步驟 3：安裝 Python 相依套件 (requirements.txt)
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Set up Node.js
+    - name: 🟢 步驟 4：設定 Node.js 執行環境 (Node.js 20)
       uses: actions/setup-node@v4
       with:
         node-version: '20'
 
-    - name: Install npm dependencies
+    - name: 📦 步驟 5：安裝 Node.js / npm 相依套件
       run: npm install
 
-    - name: Generate Fresh Self-Play Data (Single Commit Upload)
+    - name: 🎲 步驟 6：產生最新自我對弈資料並上傳至 staging 暫存區
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
         NUM_BATCHES: "20"
       run: |
-        echo "Generating 1000 games of fresh self-play data..."
+        echo "［進行中］開始產生 1000 局全新的自我對弈棋譜資料..."
         mkdir -p output_data
         npx tsx src/workers/self_play.ts
         if [ "$(ls -A output_data/)" ]; then
+          echo "［進行中］上傳最新棋譜至 Hugging Face staging/fresh 數據庫..."
           python -c "
           from huggingface_hub import HfApi
           api = HfApi()
@@ -49,16 +52,23 @@ jobs:
               folder_path='output_data',
               repo_id='hub-google/DarkChess-NNUE-Data',
               repo_type='dataset',
-              path_in_repo='/'
+              path_in_repo='staging/fresh'
           )"
         fi
 
-    - name: Download Replay Buffer from Hugging Face
+    - name: 🔄 步驟 7：整合與重播緩衝區數據 (Consolidate Replay Buffer)
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
+        echo "［進行中］整合 Hugging Face 上的暫存資料，維持 50 萬筆最新高質量 Replay Buffer..."
+        python src/training/consolidate_buffer.py
+
+    - name: 📥 步驟 8：下載最新 50 萬筆 Replay Buffer 訓練集
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      run: |
+        echo "［進行中］從 Hugging Face 下載完整訓練資料庫至本地 datasets/ 目錄..."
         mkdir -p datasets
-        # Download the latest replay buffer datasets (jsonl.gz files) from Hugging Face using Python API
         python -c "
         from huggingface_hub import snapshot_download
         snapshot_download(
@@ -67,30 +77,28 @@ jobs:
             local_dir='datasets'
         )"
         
-    - name: Run Phase 2 Training Loop
+    - name: 🧠 步驟 9：執行 Phase 2 - NNUE 模型神經網路訓練
       run: |
-        echo "Running NNUE Phase 2 Training..."
-        # This will train on the datasets/ directory and output models/challenger.nnue
+        echo "［進行中］開始訓練全新的挑戰者模型 (models/challenger.nnue)..."
         python src/training/train.py
         
-    - name: Run Phase 3 SPRT Validation
+    - name: ⚔️ 步驟 10：執行 Phase 3 - SPRT 棋力對決測試 (挑戰者 vs 衛冕者)
       id: sprt
       run: |
-        echo "Running SPRT Validation..."
-        # If models/champion.nnue doesn't exist, we just create a dummy one for the first run
+        echo "［進行中］開始進行 SPRT (序貫機率比檢驗) 棋力檢驗..."
         if [ ! -f models/champion.nnue ]; then
-          echo "No champion found. Challenger automatically passes."
+          echo "［通知］尚未找到舊衛冕者模型，挑戰者模型自動通過認證升格！"
           echo "PASSED=true" >> $GITHUB_ENV
         else
           python src/training/sprt_validation.py --champion models/champion.nnue --challenger models/challenger.nnue
         fi
         
-    - name: Run Phase 4 Promotion and Commit
+    - name: 🏆 步驟 11：執行 Phase 4 - 模型晉升與 Git 自動 Commit 提交
       if: env.PASSED == 'true'
       run: |
-        echo "SPRT passed. Promoting challenger to champion."
+        echo "［成功］挑戰者模型通過 SPRT 測試，正式晉升為新一代衛冕者模型！"
         mv models/challenger.nnue models/champion.nnue
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         git add models/champion.nnue
-        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: auto-update NNUE champion model" && git push)
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: 自動更新 NNUE 衛冕者模型 (Champion Model)" && git push)
