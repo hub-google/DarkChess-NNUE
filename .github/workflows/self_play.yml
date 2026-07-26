@@ -3,7 +3,7 @@ name: Distributed Self-Play Data Generation
 on:
   schedule:
     - cron: '0 */6 * * *' # Run every 6 hours
-  workflow_dispatch: {}
+  workflow_dispatch:
 
 jobs:
   self-play-worker:
@@ -45,7 +45,6 @@ jobs:
         mkdir -p output_data
         
         START_TIME=$(date +%s)
-        # 5.5 hours runtime
         MAX_DURATION=19800
         
         while true; do
@@ -58,21 +57,11 @@ jobs:
           fi
           
           echo "[Worker ${WORKER_ID}] Generating batch for 10 minutes..."
-          # Run ~200 batches (~10,000 games, takes ~10 mins) per upload interval
           env NUM_BATCHES=200 npx tsx src/workers/self_play.ts
           
-          # Upload 10-minute batch to Hugging Face
           if [ "$(ls -A output_data/)" ]; then
             echo "[Worker ${WORKER_ID}] Uploading 10-minute batch to HuggingFace..."
-            python -c "
-from huggingface_hub import HfApi
-api = HfApi()
-api.upload_folder(
-    folder_path='output_data',
-    repo_id='hub-google/DarkChess-NNUE-Data',
-    repo_type='dataset',
-    path_in_repo='/'
-)"
+            python -c "from huggingface_hub import HfApi; HfApi().upload_folder(folder_path='output_data', repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', path_in_repo='/')"
             rm -rf output_data/*
           fi
         done
