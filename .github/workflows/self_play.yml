@@ -49,19 +49,14 @@ jobs:
         echo '{"id":"mock","res":1.0}' > output_data/data_${TIMESTAMP}_${UUID}.jsonl
         gzip output_data/data_${TIMESTAMP}_${UUID}.jsonl
         
-    - name: Configure AWS Credentials for Cloudflare R2
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        aws-region: auto # Cloudflare R2 requires region 'auto'
-        
-    - name: Upload Dataset to Cloudflare R2
+    - name: Upload Dataset to Hugging Face
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        # Use AWS CLI pointing to the Cloudflare R2 endpoint
+        # Use huggingface-cli pointing to the Hugging Face dataset repo
         # Only attempt upload if there are actually files
         if [ "$(ls -A output_data/)" ]; then
-          aws s3 cp output_data/ s3://${{ secrets.R2_BUCKET_NAME }}/datasets/ --recursive --endpoint-url ${{ secrets.R2_ENDPOINT_URL }}
+          huggingface-cli upload hub-google/DarkChess-NNUE-Data output_data/ / --repo-type dataset
         else
           echo "No data to upload."
         fi
