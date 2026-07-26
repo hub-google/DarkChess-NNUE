@@ -1,0 +1,67 @@
+name: Distributed Self-Play Data Generation
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Run every 6 hours
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  self-play-worker:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Spin up 20 parallel workers
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+      # Prevent one failing worker from stopping the others
+      fail-fast: false
+      
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Generate Self-Play Data
+      id: generate
+      env:
+        WORKER_ID: ${{ matrix.worker_id }}
+      run: |
+        echo "Starting worker ${WORKER_ID} for self-play data generation..."
+        # In a real scenario, this script will run continuously until timed out or SIGTERM
+        # It will output data_{timestamp}_{uuid}.jsonl.gz files into a output_data/ directory
+        mkdir -p output_data
+        
+        # We wrap this in a timeout just in case it runs too long (GitHub limit is 6 hrs)
+        # We also need to handle SIGTERM gracefully in the python script.
+        # python src/self_play/generate.py --worker ${WORKER_ID} --output-dir ./output_data
+        
+        # MOCK DATA GENERATION FOR NOW to test workflow architecture
+        TIMESTAMP=$(date +%s)
+        UUID=$(uuidgen)
+        echo '{"id":"mock","res":1.0}' > output_data/data_${TIMESTAMP}_${UUID}.jsonl
+        gzip output_data/data_${TIMESTAMP}_${UUID}.jsonl
+        
+    - name: Configure AWS Credentials for Cloudflare R2
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        aws-region: auto # Cloudflare R2 requires region 'auto'
+        
+    - name: Upload Dataset to Cloudflare R2
+      run: |
+        # Use AWS CLI pointing to the Cloudflare R2 endpoint
+        # Only attempt upload if there are actually files
+        if [ "$(ls -A output_data/)" ]; then
+          aws s3 cp output_data/ s3://${{ secrets.R2_BUCKET_NAME }}/datasets/ --recursive --endpoint-url ${{ secrets.R2_ENDPOINT_URL }}
+        else
+          echo "No data to upload."
+        fi
