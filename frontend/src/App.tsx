@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Board } from './components/Board'
 import { Sidebar } from './components/Sidebar'
 import { Board as EngineBoard } from './engine/board'
