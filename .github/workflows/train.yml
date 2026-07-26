@@ -25,6 +25,34 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install npm dependencies
+      run: npm install
+
+    - name: Generate Fresh Self-Play Data (Single Commit Upload)
+      env:
+        HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        NUM_BATCHES: "20"
+      run: |
+        echo "Generating 1000 games of fresh self-play data..."
+        mkdir -p output_data
+        npx tsx src/workers/self_play.ts
+        if [ "$(ls -A output_data/)" ]; then
+          python -c "
+          from huggingface_hub import HfApi
+          api = HfApi()
+          api.upload_folder(
+              folder_path='output_data',
+              repo_id='hub-google/DarkChess-NNUE-Data',
+              repo_type='dataset',
+              path_in_repo='/'
+          )"
+        fi
+
     - name: Download Replay Buffer from Hugging Face
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
