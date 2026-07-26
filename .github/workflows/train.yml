@@ -28,8 +28,14 @@ jobs:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         mkdir -p datasets
-        # Download the latest replay buffer datasets (jsonl.gz files) from Hugging Face
-        huggingface-cli download hub-google/DarkChess-NNUE-Data --repo-type dataset --local-dir datasets
+        # Download the latest replay buffer datasets (jsonl.gz files) from Hugging Face using Python API
+        python -c "
+        from huggingface_hub import snapshot_download
+        snapshot_download(
+            repo_id='hub-google/DarkChess-NNUE-Data',
+            repo_type='dataset',
+            local_dir='datasets'
+        )"
         
     - name: Run Phase 2 Training Loop
       run: |

@@ -53,10 +53,17 @@ jobs:
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        # Use huggingface-cli pointing to the Hugging Face dataset repo
-        # Only attempt upload if there are actually files
+        # Use Python Hugging Face API to upload
         if [ "$(ls -A output_data/)" ]; then
-          huggingface-cli upload hub-google/DarkChess-NNUE-Data output_data/ / --repo-type dataset
+          python -c "
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.upload_folder(
+            folder_path='output_data',
+            repo_id='hub-google/DarkChess-NNUE-Data',
+            repo_type='dataset',
+            path_in_repo='/'
+        )"
         else
           echo "No data to upload."
         fi
