@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.optim as optim
 import os
 import glob
+import gzip
+import json
+import numpy as np
+from torch.utils.data import IterableDataset, DataLoader
+from board import DarkChessBoardPy
 
 # --- NNUE Model Definition ---
 class DarkChessNNUE(nn.Module):
@@ -57,12 +62,55 @@ class AutoTuner:
             self.state = AutoTuningState.FAST_LEARNING
 
 # --- TD-Learning Loss ---
-def td_loss(predictions, root_evals, absolute_results):
+def td_loss(predictions, absolute_results):
     """
-    Target = 0.5 * 最終勝負 + 0.5 * 該步搜尋樹根節點評估值
+    Target = 最終勝負 (For now, simplified without MCTS root eval)
     """
-    targets = 0.5 * absolute_results + 0.5 * root_evals
-    return nn.MSELoss()(predictions, targets)
+    return nn.MSELoss()(predictions, absolute_results)
+
+# --- Feature Extraction ---
+def extract_features(board):
+    features = np.zeros(494, dtype=np.float32)
+    for p in range(14):
+        bb = int(board.piece_bitboards[p])
+        for sq in range(32):
+            if (bb >> sq) & 1:
+                features[sq * 15 + p] = 1.0
+                
+    hb = int(board.hidden_bitboard)
+    hidden_counts = np.zeros(14, dtype=np.float32)
+    for sq in range(32):
+        if (hb >> sq) & 1:
+            features[sq * 15 + 14] = 1.0
+            piece = board.hidden_pieces[sq]
+            hidden_counts[piece] += 1.0
+            
+    features[480:494] = hidden_counts
+    return features
+
+class DarkChessDataset(IterableDataset):
+    def __init__(self, files):
+        self.files = files
+        
+    def __iter__(self):
+        for f in self.files:
+            try:
+                with gzip.open(f, 'rt', encoding='utf-8') as gz:
+                    for line in gz:
+                        if not line.strip(): continue
+                        game = json.loads(line)
+                        board = DarkChessBoardPy(bag=game['hid'])
+                        res = float(game['res'])
+                        
+                        for move in game['mov']:
+                            side = board.side_to_move
+                            if side != 2: # 2 is NONE
+                                target = res if side == 0 else -res
+                                feat = extract_features(board)
+                                yield torch.tensor(feat), torch.tensor([target], dtype=torch.float32)
+                            board.make_move(move)
+            except Exception as e:
+                print(f"Error reading {f}: {e}")
 
 def main():
     print("Initializing DarkChess NNUE Training Pipeline...")
@@ -79,15 +127,32 @@ def main():
     # Replay Buffer mechanism (Sliding window up to 500k games)
     print("Replay buffer configured. Max capacity: 500,000 games.")
     
+    dataset = DarkChessDataset(files)
+    dataloader = DataLoader(dataset, batch_size=256)
+    
     print(f"Current State: {tuner.state}, Hyperparams: {tuner.get_hyperparameters()}")
     print("Training loop ready.")
 
-    # [MOCK TRAINING LOOP FOR PIPELINE VALIDATION]
-    print("Simulating training epochs...")
+    # REAL TRAINING LOOP
+    print("Starting training epochs...")
+    model.train()
+    
+    total_loss = 0
+    batches = 0
     for epoch in range(1):
-        # We would normally parse the jsonl.gz and run forward/backward passes here.
-        # But for now, we just pass to ensure the script completes without crashing.
-        pass
+        for features, targets in dataloader:
+            optimizer.zero_grad()
+            outputs = model(features)
+            loss = td_loss(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            batches += 1
+            if batches % 100 == 0:
+                print(f"Epoch {epoch} | Batch {batches} | Loss: {total_loss/100:.4f}")
+                total_loss = 0
+                
     print("Training complete.")
 
     # 2. Save the newly trained model to models/challenger.nnue

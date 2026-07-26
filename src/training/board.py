@@ -42,7 +42,7 @@ def can_capture(attacker, victim):
     return att_type <= vic_type
 
 class DarkChessBoardPy:
-    def __init__(self):
+    def __init__(self, bag=None):
         self.piece_bitboards = np.zeros(14, dtype=np.uint32)
         self.hidden_bitboard = np.uint32(0xFFFFFFFF)
         self.occupied_bitboard = np.uint32(0)
@@ -50,15 +50,17 @@ class DarkChessBoardPy:
         self.side_to_move = NONE
         self.half_move_clock = 0
         self.history = []
-        self._init_random_board()
+        self._init_random_board(bag)
         
-    def _init_random_board(self):
-        bag = np.array([
-            0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 6,
-            7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 13, 13, 13
-        ], dtype=np.int32)
-        
-        np.random.shuffle(bag)
+    def _init_random_board(self, bag=None):
+        if bag is None:
+            bag = np.array([
+                0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 6,
+                7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 13, 13, 13
+            ], dtype=np.int32)
+            np.random.shuffle(bag)
+        else:
+            bag = np.array(bag, dtype=np.int32)
         self.hidden_pieces = bag
         
     def get_snapshot(self):

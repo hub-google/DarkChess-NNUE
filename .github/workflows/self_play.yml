@@ -37,31 +37,34 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Generate Self-Play Data
-      id: generate
+    - name: Generate and Upload Self-Play Data Continuously
       env:
         WORKER_ID: ${{ matrix.worker_id }}
-      run: |
-        echo "Starting worker ${WORKER_ID} for self-play data generation..."
-        # In a real scenario, this script will run continuously until timed out or SIGTERM
-        # It will output data_{timestamp}_{uuid}.jsonl.gz files into a output_data/ directory
-        mkdir -p output_data
-        
-        # We wrap this in a timeout just in case it runs too long (GitHub limit is 6 hrs)
-        # We also need to handle SIGTERM gracefully in the python script.
-        # python src/self_play/generate.py --worker ${WORKER_ID} --output-dir ./output_data
-        
-        # Run the real typescript data generation worker
-        # We run it for 5 batches to accumulate some data in each worker instance
-        env NUM_BATCHES=5 npx tsx src/workers/self_play.ts
-        
-    - name: Upload Dataset to Hugging Face
-      env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        # Use Python Hugging Face API to upload
-        if [ "$(ls -A output_data/)" ]; then
-          python -c "
+        echo "Starting worker ${WORKER_ID} for continuous self-play data generation..."
+        mkdir -p output_data
+        
+        START_TIME=$(date +%s)
+        # 5 hours and 30 minutes = 19800 seconds
+        MAX_DURATION=19800
+        
+        while true; do
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$(($CURRENT_TIME - $START_TIME))
+          
+          if [ $ELAPSED -ge $MAX_DURATION ]; then
+            echo "Reached 5.5 hours. Stopping gracefully to prevent GitHub Action timeout."
+            break
+          fi
+          
+          echo "[Worker ${WORKER_ID}] Elapsed: $ELAPSED seconds. Generating new batches..."
+          # Run generation for a short time (e.g. 5 batches = ~1.5 mins)
+          env NUM_BATCHES=5 npx tsx src/workers/self_play.ts
+          
+          # Upload to Hugging Face
+          if [ "$(ls -A output_data/)" ]; then
+            python -c "
         from huggingface_hub import HfApi
         api = HfApi()
         api.upload_folder(
@@ -70,6 +73,7 @@ jobs:
             repo_type='dataset',
             path_in_repo='/'
         )"
-        else
-          echo "No data to upload."
-        fi
+            # Delete uploaded files to avoid re-uploading and to save disk space
+            rm -rf output_data/*
+          fi
+        done
