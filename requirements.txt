@@ -3,3 +3,4 @@ numba
 numpy
 huggingface_hub
 python-dotenv
+requests
