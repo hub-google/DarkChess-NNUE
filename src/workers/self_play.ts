@@ -31,7 +31,7 @@ function getHeuristicMove(board: DarkChessBoard, moves: MoveId[]): MoveId {
     return remaining[Math.floor(Math.random() * remaining.length)];
 }
 
-import { packGames, uploadToCloudflareR2 } from './uploader';
+import { packGames, writeToLocalDisk } from './uploader';
 
 export async function runSelfPlayBatch(batchSize = 50) {
     const games = [];
@@ -69,14 +69,29 @@ export async function runSelfPlayBatch(batchSize = 50) {
     console.log(`[Self-Play] Batch ${batchId} generated. Compressing...`);
     const compressedData = packGames(games);
     
-    console.log(`[Self-Play] Uploading to R2...`);
-    const success = await uploadToCloudflareR2(compressedData, batchId);
+    console.log(`[Self-Play] Writing to local disk...`);
+    const outputDir = process.env.OUTPUT_DIR || 'output_data';
+    const success = writeToLocalDisk(compressedData, batchId, outputDir);
     
     if (success) {
-        console.log(`[Self-Play] Upload complete!`);
+        console.log(`[Self-Play] Batch saved successfully!`);
     } else {
-        console.error(`[Self-Play] Upload failed! (Retries can be implemented here)`);
+        console.error(`[Self-Play] Batch save failed!`);
     }
 
     return success;
+}
+
+// If invoked directly from CLI
+if (require.main === module) {
+    const BATCH_SIZE = 50;
+    const NUM_BATCHES = parseInt(process.env.NUM_BATCHES || "1", 10); // Run once by default for actions
+
+    (async () => {
+        console.log(`Starting self-play worker. Generating ${NUM_BATCHES} batches of ${BATCH_SIZE} games.`);
+        for (let i = 0; i < NUM_BATCHES; i++) {
+            await runSelfPlayBatch(BATCH_SIZE);
+        }
+        console.log("Self-play worker finished.");
+    })();
 }

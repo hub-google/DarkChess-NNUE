@@ -1,7 +1,6 @@
 import * as pako from 'pako';
-
-// Replace this with the actual Cloudflare Worker URL or environment variable later
-const CLOUDFLARE_WORKER_URL = "https://darkchess-nnue-worker.yourdomain.workers.dev"; 
+import * as fs from 'fs';
+import * as path from 'path';
 
 export function packGames(games: any[]): Uint8Array {
     // 1. Convert array of game objects to JSONL string
@@ -11,19 +10,17 @@ export function packGames(games: any[]): Uint8Array {
     return pako.gzip(jsonlString);
 }
 
-export async function uploadToCloudflareR2(compressedData: Uint8Array, batchId: string): Promise<boolean> {
+export function writeToLocalDisk(compressedData: Uint8Array, batchId: string, outputDir: string): boolean {
     try {
-        const response = await fetch(`${CLOUDFLARE_WORKER_URL}/upload/${batchId}.jsonl.gz`, {
-            method: 'PUT',
-            headers: {
-                'Content-Encoding': 'gzip'
-            },
-            body: compressedData
-        });
-        
-        return response.ok;
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+        const filePath = path.join(outputDir, `data_${Date.now()}_${batchId}.jsonl.gz`);
+        fs.writeFileSync(filePath, compressedData);
+        console.log(`[Uploader] Wrote batch to ${filePath}`);
+        return true;
     } catch (error) {
-        console.error("Failed to upload batch to R2:", error);
+        console.error("[Uploader] Failed to write batch to disk:", error);
         return false;
     }
 }

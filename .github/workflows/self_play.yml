@@ -43,11 +43,9 @@ jobs:
         # We also need to handle SIGTERM gracefully in the python script.
         # python src/self_play/generate.py --worker ${WORKER_ID} --output-dir ./output_data
         
-        # MOCK DATA GENERATION FOR NOW to test workflow architecture
-        TIMESTAMP=$(date +%s)
-        UUID=$(uuidgen)
-        echo '{"id":"mock","res":1.0}' > output_data/data_${TIMESTAMP}_${UUID}.jsonl
-        gzip output_data/data_${TIMESTAMP}_${UUID}.jsonl
+        # Run the real typescript data generation worker
+        # We run it for 5 batches to accumulate some data in each worker instance
+        env NUM_BATCHES=5 npx tsx src/workers/self_play.ts
         
     - name: Upload Dataset to Hugging Face
       env:
