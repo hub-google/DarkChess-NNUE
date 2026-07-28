@@ -3,7 +3,7 @@ import glob
 import gzip
 import json
 import shutil
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import HfApi, snapshot_download, CommitOperationDelete, CommitOperationAdd
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity (latest 500k games)
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
@@ -59,26 +59,34 @@ def consolidate():
     # 5. Clean HF repo root and upload single replay buffer
     print("5. Updating Hugging Face dataset repo...")
     try:
-        try:
-            api.delete_folder(path_in_repo="staging", repo_id=REPO_ID, repo_type="dataset")
-            print("Successfully deleted staging directory on Hugging Face.")
-        except Exception as del_folder_err:
-            print(f"Warning deleting staging directory: {del_folder_err}")
-
         online_files = api.list_repo_files(repo_id=REPO_ID, repo_type="dataset")
+        operations = []
+        
+        # Delete all existing data files except the new buffer and hidden files
         for of in online_files:
             if not of.startswith(".") and of != BUFFER_FILE:
-                try:
-                    api.delete_file(path_in_repo=of, repo_id=REPO_ID, repo_type="dataset")
-                except Exception as del_err:
-                    print(f"Warning deleting {of}: {del_err}")
+                operations.append(CommitOperationDelete(path_in_repo=of))
 
-        api.upload_file(
-            path_or_fileobj=output_path,
+        # Add the consolidated buffer file
+        operations.append(CommitOperationAdd(
             path_in_repo=BUFFER_FILE,
-            repo_id=REPO_ID,
-            repo_type="dataset"
-        )
+            path_or_fileobj=output_path
+        ))
+        
+        # Hugging Face limits ops per commit. Batching by 500 avoids limit.
+        def chunker(seq, size):
+            return (seq[pos:pos + size] for pos in range(0, len(seq), size))
+            
+        chunks = list(chunker(operations, 500))
+        for i, chunk in enumerate(chunks):
+            api.create_commit(
+                repo_id=REPO_ID,
+                repo_type="dataset",
+                operations=chunk,
+                commit_message=f"Consolidate buffer and cleanup (part {i+1}/{len(chunks)})"
+            )
+            print(f"Committed chunk {i+1}/{len(chunks)} ({len(chunk)} operations).")
+
         print("Dataset consolidated successfully on Hugging Face!")
     except Exception as e:
         print(f"Error updating Hugging Face dataset: {e}")
