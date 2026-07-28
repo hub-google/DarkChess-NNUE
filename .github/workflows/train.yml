@@ -45,15 +45,7 @@ jobs:
         npx tsx src/workers/self_play.ts
         if [ "$(ls -A output_data/)" ]; then
           echo "［進行中］上傳最新棋譜至 Hugging Face staging/fresh 數據庫..."
-          python -c "
-          from huggingface_hub import HfApi
-          api = HfApi()
-          api.upload_folder(
-              folder_path='output_data',
-              repo_id='hub-google/DarkChess-NNUE-Data',
-              repo_type='dataset',
-              path_in_repo='staging/fresh'
-          )"
+          python -c "from huggingface_hub import HfApi; HfApi().upload_folder(folder_path='output_data', repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', path_in_repo='staging/fresh')"
         fi
 
     - name: 🔄 步驟 7：整合與重播緩衝區數據 (Consolidate Replay Buffer)
@@ -69,13 +61,7 @@ jobs:
       run: |
         echo "［進行中］從 Hugging Face 下載完整訓練資料庫至本地 datasets/ 目錄..."
         mkdir -p datasets
-        python -c "
-        from huggingface_hub import snapshot_download
-        snapshot_download(
-            repo_id='hub-google/DarkChess-NNUE-Data',
-            repo_type='dataset',
-            local_dir='datasets'
-        )"
+        python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', local_dir='datasets')"
         
     - name: 🧠 步驟 9：執行 Phase 2 - NNUE 模型神經網路訓練
       run: |

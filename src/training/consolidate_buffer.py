@@ -59,6 +59,12 @@ def consolidate():
     # 5. Clean HF repo root and upload single replay buffer
     print("5. Updating Hugging Face dataset repo...")
     try:
+        try:
+            api.delete_folder(path_in_repo="staging", repo_id=REPO_ID, repo_type="dataset")
+            print("Successfully deleted staging directory on Hugging Face.")
+        except Exception as del_folder_err:
+            print(f"Warning deleting staging directory: {del_folder_err}")
+
         online_files = api.list_repo_files(repo_id=REPO_ID, repo_type="dataset")
         for of in online_files:
             if not of.startswith(".") and of != BUFFER_FILE:

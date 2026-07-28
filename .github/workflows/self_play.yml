@@ -62,8 +62,9 @@ jobs:
           env NUM_BATCHES=200 npx tsx src/workers/self_play.ts
           
           if [ "$(ls -A output_data/)" ]; then
-            echo "［ Worker ${WORKER_ID} ］將生成的批次數據同步上傳至 Hugging Face (staging/worker_${WORKER_ID})..."
-            python -c "import os; from huggingface_hub import HfApi; worker_id = os.environ.get('WORKER_ID', '1'); HfApi().upload_folder(folder_path='output_data', repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', path_in_repo=f'staging/worker_{worker_id}')"
+            DATE_STR=$(date +%Y%m%d)
+            echo "［ Worker ${WORKER_ID} ］將生成的批次數據同步上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
+            python -c "import os; from huggingface_hub import HfApi; worker_id = os.environ.get('WORKER_ID', '1'); HfApi().upload_folder(folder_path='output_data', repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', path_in_repo=f'staging/worker_{worker_id}/${DATE_STR}')"
             rm -rf output_data/*
           fi
         done
