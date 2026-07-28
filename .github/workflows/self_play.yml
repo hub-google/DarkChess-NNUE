@@ -6,6 +6,10 @@ on:
     - cron: '0 */6 * * *' # 每 6 小時觸發一次
   workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
 
+concurrency:
+  group: self-play
+  cancel-in-progress: true
+
 jobs:
   self-play-worker:
     name: 🤖 自我對弈運算節點 (Worker ${{ matrix.worker_id }})

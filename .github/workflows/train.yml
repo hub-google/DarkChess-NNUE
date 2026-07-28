@@ -6,6 +6,10 @@ on:
     - cron: '0 0 * * *' # 每天 UTC 00:00 (台灣時間 08:00) 自動執行
   workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
 
+concurrency:
+  group: train
+  cancel-in-progress: true
+
 jobs:
   train-and-validate:
     name: 🏋️ 模型訓練與 SPRT 棋力對決評測
