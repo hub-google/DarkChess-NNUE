@@ -49,31 +49,8 @@ jobs:
         npx tsx src/workers/self_play.ts
         if [ "$(ls -A output_data/)" ]; then
           echo "［進行中］將最新棋譜整合為單一檔案並上傳至 Hugging Face staging/fresh 數據庫..."
-          python -c "
-import os, glob, gzip, time
-from huggingface_hub import HfApi
-
-output_dir = 'output_data'
-files = glob.glob(os.path.join(output_dir, '*.jsonl.gz'))
-if files:
-    merged_lines = []
-    for f in files:
-        with gzip.open(f, 'rt', encoding='utf-8') as gz:
-            merged_lines.extend(gz.readlines())
-        os.remove(f)
-    timestamp = int(time.time())
-    consolidated_file = os.path.join(output_dir, f'batch_{timestamp}.jsonl.gz')
-    with gzip.open(consolidated_file, 'wt', encoding='utf-8') as gz:
-        gz.writelines(merged_lines)
-    
-    HfApi().upload_folder(
-        folder_path=output_dir,
-        repo_id='hub-google/DarkChess-NNUE-Data',
-        repo_type='dataset',
-        path_in_repo='staging/fresh'
-    )
-    os.remove(consolidated_file)
-"
+          export PATH_IN_REPO="staging/fresh"
+          python src/workers/upload_batch.py
           rm -rf output_data/*
         fi
 

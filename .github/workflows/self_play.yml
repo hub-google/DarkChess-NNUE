@@ -68,32 +68,9 @@ jobs:
           if [ "$(ls -A output_data/)" ]; then
             DATE_STR=$(date +%Y%m%d)
             echo "［ Worker ${WORKER_ID} ］將生成的批次數據整合為單一檔案並同步上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
-            python -c "
-import os, glob, gzip, time
-from huggingface_hub import HfApi
-
-output_dir = 'output_data'
-files = glob.glob(os.path.join(output_dir, '*.jsonl.gz'))
-if files:
-    merged_lines = []
-    for f in files:
-        with gzip.open(f, 'rt', encoding='utf-8') as gz:
-            merged_lines.extend(gz.readlines())
-        os.remove(f)
-    timestamp = int(time.time())
-    worker_id = os.environ.get('WORKER_ID', '1')
-    consolidated_file = os.path.join(output_dir, f'batch_{timestamp}.jsonl.gz')
-    with gzip.open(consolidated_file, 'wt', encoding='utf-8') as gz:
-        gz.writelines(merged_lines)
-    
-    HfApi().upload_folder(
-        folder_path=output_dir,
-        repo_id='hub-google/DarkChess-NNUE-Data',
-        repo_type='dataset',
-        path_in_repo=f'staging/worker_{worker_id}/{DATE_STR}'
-    )
-    os.remove(consolidated_file)
-"
+            export DATE_STR=$(date +%Y%m%d)
+            echo "［ Worker ${WORKER_ID} ］將生成的批次數據整合為單一檔案並同步上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
+            python src/workers/upload_batch.py
             rm -rf output_data/*
           fi
         done
