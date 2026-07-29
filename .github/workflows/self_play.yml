@@ -66,11 +66,9 @@ jobs:
           env NUM_BATCHES=200 npx tsx src/workers/self_play.ts
           
           if [ "$(ls -A output_data/)" ]; then
-            DATE_STR=$(date +%Y%m%d)
-            echo "［ Worker ${WORKER_ID} ］將生成的批次數據整合為單一檔案並同步上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
             export DATE_STR=$(date +%Y%m%d)
-            echo "［ Worker ${WORKER_ID} ］將生成的批次數據整合為單一檔案並同步上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
-            python src/workers/upload_batch.py
+            echo "［ Worker ${WORKER_ID} ］整合批次數據並上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
+            python src/workers/upload_batch.py || echo "［警告］上傳失敗，下一輪重試"
             rm -rf output_data/*
           fi
         done
