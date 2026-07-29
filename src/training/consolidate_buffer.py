@@ -22,7 +22,7 @@ def consolidate():
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
-        snapshot_download(repo_id=REPO_ID, repo_type="dataset", local_dir=temp_dir, token=hf_token)
+        snapshot_download(repo_id=REPO_ID, repo_type="dataset", local_dir=temp_dir, token=hf_token, allow_patterns=["*.jsonl.gz"])
     except Exception as e:
         print(f"Warning during snapshot download: {e}")
 
@@ -59,33 +59,41 @@ def consolidate():
     # 5. Clean HF repo root and upload single replay buffer
     print("5. Updating Hugging Face dataset repo...")
     try:
+        # First upload the consolidated buffer file
+        api.upload_file(
+            path_or_fileobj=output_path,
+            path_in_repo=BUFFER_FILE,
+            repo_id=REPO_ID,
+            repo_type="dataset",
+            commit_message="Update consolidated replay buffer"
+        )
+        print(f"Uploaded consolidated {BUFFER_FILE} to Hugging Face.")
+
+        # Cleanup old staging files from HF
         online_files = api.list_repo_files(repo_id=REPO_ID, repo_type="dataset")
-        operations = []
+        delete_ops = []
         
-        # Delete all existing data files except the new buffer and hidden files
         for of in online_files:
             if not of.startswith(".") and of != BUFFER_FILE:
-                operations.append(CommitOperationDelete(path_in_repo=of))
+                delete_ops.append(CommitOperationDelete(path_in_repo=of))
 
-        # Add the consolidated buffer file
-        operations.append(CommitOperationAdd(
-            path_in_repo=BUFFER_FILE,
-            path_or_fileobj=output_path
-        ))
-        
-        # Hugging Face limits ops per commit. Batching by 500 avoids limit.
-        def chunker(seq, size):
-            return (seq[pos:pos + size] for pos in range(0, len(seq), size))
-            
-        chunks = list(chunker(operations, 500))
-        for i, chunk in enumerate(chunks):
-            api.create_commit(
-                repo_id=REPO_ID,
-                repo_type="dataset",
-                operations=chunk,
-                commit_message=f"Consolidate buffer and cleanup (part {i+1}/{len(chunks)})"
-            )
-            print(f"Committed chunk {i+1}/{len(chunks)} ({len(chunk)} operations).")
+        if delete_ops:
+            print(f"Found {len(delete_ops)} old files to clean up from Hugging Face...")
+            def chunker(seq, size):
+                return (seq[pos:pos + size] for pos in range(0, len(seq), size))
+                
+            chunks = list(chunker(delete_ops, 500))
+            for i, chunk in enumerate(chunks):
+                try:
+                    api.create_commit(
+                        repo_id=REPO_ID,
+                        repo_type="dataset",
+                        operations=chunk,
+                        commit_message=f"Clean staging files (part {i+1}/{len(chunks)})"
+                    )
+                    print(f"Cleaned staging files chunk {i+1}/{len(chunks)} ({len(chunk)} files).")
+                except Exception as ce:
+                    print(f"Warning cleaning chunk {i+1}/{len(chunks)}: {ce}")
 
         print("Dataset consolidated successfully on Hugging Face!")
     except Exception as e:

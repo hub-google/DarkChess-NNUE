@@ -27,10 +27,10 @@ jobs:
       - name: 📥 步驟 1：檢出專案程式碼 (Checkout Code)
         uses: actions/checkout@v4
         
-      - name: 🟢 步驟 2：設定 Node.js 執行環境 (Node.js 20)
+      - name: 🟢 步驟 2：設定 Node.js 執行環境 (Node.js 22)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
           

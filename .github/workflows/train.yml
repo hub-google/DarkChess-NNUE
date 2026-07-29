@@ -31,10 +31,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: 🟢 步驟 4：設定 Node.js 執行環境 (Node.js 20)
+    - name: 🟢 步驟 4：設定 Node.js 執行環境 (Node.js 22)
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '22'
 
     - name: 📦 步驟 5：安裝 Node.js / npm 相依套件
       run: npm install
@@ -48,8 +48,33 @@ jobs:
         mkdir -p output_data
         npx tsx src/workers/self_play.ts
         if [ "$(ls -A output_data/)" ]; then
-          echo "［進行中］上傳最新棋譜至 Hugging Face staging/fresh 數據庫..."
-          python -c "from huggingface_hub import HfApi; HfApi().upload_folder(folder_path='output_data', repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', path_in_repo='staging/fresh')"
+          echo "［進行中］將最新棋譜整合為單一檔案並上傳至 Hugging Face staging/fresh 數據庫..."
+          python -c "
+import os, glob, gzip, time
+from huggingface_hub import HfApi
+
+output_dir = 'output_data'
+files = glob.glob(os.path.join(output_dir, '*.jsonl.gz'))
+if files:
+    merged_lines = []
+    for f in files:
+        with gzip.open(f, 'rt', encoding='utf-8') as gz:
+            merged_lines.extend(gz.readlines())
+        os.remove(f)
+    timestamp = int(time.time())
+    consolidated_file = os.path.join(output_dir, f'batch_{timestamp}.jsonl.gz')
+    with gzip.open(consolidated_file, 'wt', encoding='utf-8') as gz:
+        gz.writelines(merged_lines)
+    
+    HfApi().upload_folder(
+        folder_path=output_dir,
+        repo_id='hub-google/DarkChess-NNUE-Data',
+        repo_type='dataset',
+        path_in_repo='staging/fresh'
+    )
+    os.remove(consolidated_file)
+"
+          rm -rf output_data/*
         fi
 
     - name: 🔄 步驟 7：整合與重播緩衝區數據 (Consolidate Replay Buffer)
@@ -63,9 +88,9 @@ jobs:
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
-        echo "［進行中］從 Hugging Face 下載完整訓練資料庫至本地 datasets/ 目錄..."
+        echo "［進行中］從 Hugging Face 下載整合好的 Replay Buffer 至本地 datasets/ 目錄..."
         mkdir -p datasets
-        python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', local_dir='datasets')"
+        python -c "from huggingface_hub import hf_hub_download; import os, shutil; path = hf_hub_download(repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', filename='replay_buffer.jsonl.gz'); shutil.copy(path, 'datasets/replay_buffer.jsonl.gz')"
         
     - name: 🧠 步驟 9：執行 Phase 2 - NNUE 模型神經網路訓練
       run: |
