@@ -89,7 +89,7 @@ sequenceDiagram
 | **7** | **融合並清空 HF 暫存區** | `python src/training/consolidate_buffer.py` | HF `staging/*` 所有散檔 | HF 根目錄 `replay_buffer.jsonl.gz` | **解法核心**：讀入所有對局，滑動窗口保留最新 50 萬局，打包成 1 個壓縮檔，並分批**刪除 HF 上所有的 `staging/*` 散檔** |
 | **8** | 下載完整訓練集 | Python `hf_hub_download()` | HF `hub-google/DarkChess-NNUE-Data` | 本地 `datasets/replay_buffer.jsonl.gz` | 精確下載單一整合大檔至本地，防範 429 Too Many Requests 限流 |
 | **9** | **NNUE 模型訓練** | `python src/training/train.py` | `datasets/replay_buffer.jsonl.gz` | `models/challenger.nnue` | 讀取 50 萬局進行 5~10 Epochs 的 PyTorch (AdamW + TD-Learning) 訓練 |
-| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true`) | **目前前期開發階段暫時跳過，每日直接通過**。未來將恢復進行 1,000 局 Paired 鏡像對決，若挑戰者勝率顯著較高，才設定通過標記 |
+| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true`) | 進行 1,000 局 Paired 鏡像對決，若挑戰者勝率顯著較高，設定通過標記。<br>*(註：目前為前期開發階段，暫時跳過 SPRT 檢測，強制設定為通過，讓每日產出的模型直接升格)* |
 | **11** | **模型晉升與 Push** | Shell bash & Git CLI | `models/challenger.nnue` | `models/champion.nnue` ➔ GitHub `master` Branch | 覆蓋衛冕者模型，`git commit` 並 `git push`。這會進一步觸發 `deploy_pages.yml` |
 
 ---
