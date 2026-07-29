@@ -36,7 +36,8 @@ def merge_and_upload():
         folder_path=output_dir,
         repo_id='hub-google/DarkChess-NNUE-Data',
         repo_type='dataset',
-        path_in_repo=path_in_repo
+        path_in_repo=path_in_repo,
+        delete_patterns="data_*.jsonl.gz"
     )
     os.remove(consolidated_file)
     print("Upload complete.")
