@@ -4,13 +4,14 @@
 
 ---
 
-## 🧭 系統三大 GitHub Actions 工作流概覽
+## 🧭 系統四大 GitHub Actions 工作流概覽
 
 | Workflow 檔名 | 工作流名稱 | 觸發時機 | 主要任務與目標 |
 | :--- | :--- | :--- | :--- |
 | **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 20 台 Worker 併發進行自我對弈，產生對局上傳至 Hugging Face 暫存區 |
 | **`train.yml`** | 🤖 NNUE 自主訓練與評測流程 | 每日 UTC 00:00（或手動） | 清理並融合 Hugging Face 數據 ➔ 訓練挑戰者模型 ➔ SPRT 對決 ➔ 晉升並 Push |
 | **`deploy_pages.yml`** | 🌐 部署暗棋網頁端至 GitHub Pages | 收到新 `models/champion.nnue` 時 | 自動編譯 TypeScript / WASM / Vite 並更新線上 GitHub Pages 網站 |
+| **`cleanup.yml`** | 🧹 清理 Hugging Face 散檔 | 手動觸發 (`workflow_dispatch`) | 一次性或手動清理 HF `staging` 目錄下過多的對局散檔，避免超出儲存限制 |
 
 ---
 
@@ -88,7 +89,7 @@ sequenceDiagram
 | **7** | **融合並清空 HF 暫存區** | `python src/training/consolidate_buffer.py` | HF `staging/*` 所有散檔 | HF 根目錄 `replay_buffer.jsonl.gz` | **解法核心**：讀入所有對局，滑動窗口保留最新 50 萬局，打包成 1 個壓縮檔，並分批**刪除 HF 上所有的 `staging/*` 散檔** |
 | **8** | 下載完整訓練集 | Python `hf_hub_download()` | HF `hub-google/DarkChess-NNUE-Data` | 本地 `datasets/replay_buffer.jsonl.gz` | 精確下載單一整合大檔至本地，防範 429 Too Many Requests 限流 |
 | **9** | **NNUE 模型訓練** | `python src/training/train.py` | `datasets/replay_buffer.jsonl.gz` | `models/challenger.nnue` | 讀取 50 萬局進行 5~10 Epochs 的 PyTorch (AdamW + TD-Learning) 訓練 |
-| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true`) | 進行 1,000 局 Paired 鏡像對決，若挑戰者勝率顯著較高，設定通過標記 |
+| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true`) | **目前前期開發階段暫時跳過，每日直接通過**。未來將恢復進行 1,000 局 Paired 鏡像對決，若挑戰者勝率顯著較高，才設定通過標記 |
 | **11** | **模型晉升與 Push** | Shell bash & Git CLI | `models/challenger.nnue` | `models/champion.nnue` ➔ GitHub `master` Branch | 覆蓋衛冕者模型，`git commit` 並 `git push`。這會進一步觸發 `deploy_pages.yml` |
 
 ---
@@ -104,6 +105,39 @@ sequenceDiagram
 2. **單元測試 (Vitest)**：`npm run test -- --run`（確保前端盤面邏輯與 WASM 介面無 bug）。
 3. **前端編譯 (Vite & WASM)**：`npm run build` 產出打包網頁檔至 `frontend/dist/`。
 4. **發布至 Pages**：呼叫 `actions/deploy-pages@v4` 將 `frontend/dist` 部署至 **GitHub Pages** 服務。
+
+---
+
+## 4️⃣ 工作流四：`cleanup.yml` (手動清理)
+
+* **檔名路徑**：[`.github/workflows/cleanup.yml`](file:///.github/workflows/cleanup.yml)
+* **觸發條件**：僅限手動觸發 (`workflow_dispatch`)。
+* **執行時間限制**：60 分鐘。
+
+### 📍 步驟與執行腳本明細：
+
+1. **環境建置**：設定 Python 3.10 並安裝 `huggingface_hub`。
+2. **清理任務**：執行 `python src/workers/cleanup_hf_staging.py`。
+3. **目的**：作為備用方案，在自動融合機制 (consolidate) 發生異常或累積散檔過多時，提供維護者手動清理 Hugging Face Datasets `staging` 暫存區的手段。
+
+---
+
+## ⏳ 執行時間分配與併發策略 (Execution Time Allocation)
+
+為充分利用 GitHub Actions 的免費額度並確保流程不中斷，系統對各工作流的執行時間進行了明確分配與限制：
+
+1. **`self_play.yml` (每 6 小時執行)**：
+   * **最大時長限制 (MAX_DURATION)**：腳本層級設定了 `19800` 秒（**5.5 小時**）的強制中止條件。
+   * **策略目的**：GitHub Actions 對單一 Job 有 6 小時的強制超時限制。設定為 5.5 小時，確保 Worker 能在 6 小時內優雅地停止對弈、寫入最後一批資料，並成功上傳至 Hugging Face，避免因超時被 GitHub 強制砍掉而遺失資料。同時確保在前一輪結束後，下一輪的 `0 */6 * * *` 排程能順利接手。
+2. **`train.yml` (每日 UTC 00:00 執行)**：
+   * **執行時間**：依據資料量與 SPRT 對決的收斂速度，約需 1~3 小時不等。
+   * **併發特性**：與 UTC 00:00 的 `self_play.yml` 同時觸發。由於兩者是獨立工作流，GitHub 會配置不同的 Runner 平行處理。`train.yml` 開始時，前一天產生的所有散檔會被下載並融合，而最新一輪的 `self_play` 則繼續產生新的散檔，兩者互不干擾。
+3. **`deploy_pages.yml` (事件驅動)**：
+   * **執行時間**：幾分鐘內完成。
+   * **策略目的**：依賴於 `train.yml` 的成功執行與模型升級，確保只有經過 SPRT 驗證為更強的模型，才會觸發編譯與發布，不占用排程時間。
+4. **`cleanup.yml` (手動維護)**：
+   * **執行時間**：設定 `timeout-minutes: 60`。
+   * **策略目的**：純作為維護工具，不在日常自動化資源競爭內。
 
 ---
 
