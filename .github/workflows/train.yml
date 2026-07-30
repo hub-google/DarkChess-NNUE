@@ -36,7 +36,7 @@ jobs:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         echo "［進行中］整合 Hugging Face 上的暫存資料，維持 50 萬筆最新高質量 Replay Buffer..."
-        python src/training/consolidate_buffer.py
+        python -u src/training/consolidate_buffer.py
 
     - name: 📥 步驟 5：下載最新 50 萬筆 Replay Buffer 訓練集
       env:
@@ -49,7 +49,7 @@ jobs:
     - name: 🧠 步驟 6：執行 Phase 2 - NNUE 模型神經網路訓練
       run: |
         echo "［進行中］開始訓練全新的挑戰者模型 (models/challenger.nnue)..."
-        python src/training/train.py
+        python -u src/training/train.py
         
     - name: 🏆 步驟 7：無條件晉升模型與 Git 自動 Commit 提交
       run: |

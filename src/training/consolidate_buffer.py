@@ -95,9 +95,9 @@ def consolidate():
                 if failed <= 5:
                     print(f"   Warning: skipping {sf}: {e}")
 
-            # Progress every 500 files
-            if (i + 1) % 500 == 0:
-                print(f"   Progress: {i+1}/{len(staging_files)} files processed...")
+            # Progress every 50 files
+            if (i + 1) % 50 == 0:
+                print(f"   Progress: {i+1}/{len(staging_files)} files processed, accumulated {len(all_games)} games so far...")
 
         print(f"   Downloaded {downloaded} files, skipped {failed} files.")
     else:
