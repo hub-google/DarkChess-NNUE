@@ -57,4 +57,21 @@ describe('MoveGenerator rules', () => {
     expect(captures.length).toBe(1);
     expect(getTo(captures[0])).toBe(3);
   });
+
+  it('should generate the same board for the same seed', () => {
+    const first = Game.generateRandomBoard(12345);
+    const second = Game.generateRandomBoard(12345);
+    expect(first.pieces).toEqual(second.pieces);
+  });
+
+  it('should keep bitboard indexes consistent when replacing a piece', () => {
+    const board = new Board();
+    board.setPiece(0, makePiece(Color.Red, PieceType.Rook), true);
+    board.setPiece(0, makePiece(Color.Black, PieceType.Pawn), true);
+
+    expect(board.colorBB[Color.Red] & 1).toBe(0);
+    expect(board.typeBB[PieceType.Rook] & 1).toBe(0);
+    expect(board.colorBB[Color.Black] & 1).toBe(1);
+    expect(board.typeBB[PieceType.Pawn] & 1).toBe(1);
+  });
 });

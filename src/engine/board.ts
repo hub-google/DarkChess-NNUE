@@ -155,6 +155,10 @@ export class DarkChessBoard {
     }
 
     public makeMove(move: MoveId) {
+        if (!this.generateLegalMoves().includes(move)) {
+            throw new Error(`Illegal move: ${move}`);
+        }
+
         const { from, to, isFlip } = decodeMove(move);
         
         // Save history for repetition check
@@ -244,8 +248,8 @@ export class DarkChessBoard {
         if (this.sideToMove !== Color.NONE) {
             const moves = this.generateLegalMoves();
             if (moves.length === 0) {
-                // Current player loses
-                return { over: true, result: -1.0 };
+                // Result is always stored from Red's perspective.
+                return { over: true, result: this.sideToMove === Color.RED ? -1.0 : 1.0 };
             }
         }
         

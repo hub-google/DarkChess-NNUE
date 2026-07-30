@@ -105,7 +105,10 @@ class DarkChessDataset(IterableDataset):
                         for move in game['mov']:
                             side = board.side_to_move
                             if side != 2: # 2 is NONE
-                                target = res if side == 0 else -res
+                                # The network value is always from Red's perspective.
+                                # This matches self-play records and SPRT move selection
+                                # (Red maximizes the value, Black minimizes it).
+                                target = res
                                 feat = extract_features(board)
                                 yield torch.tensor(feat), torch.tensor([target], dtype=torch.float32)
                             board.make_move(move)

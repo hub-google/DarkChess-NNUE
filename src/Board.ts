@@ -30,6 +30,13 @@ export class Board {
   }
 
   public setPiece(square: Square, piece: Piece, isRevealed: boolean) {
+    this.assertSquare(square);
+    if (piece === PieceType.Empty) {
+      throw new Error('Cannot place an empty piece');
+    }
+    if ((this.occupied & (1 << square)) !== 0) {
+      this.removePiece(square);
+    }
     this.pieces[square] = piece;
     this.occupied = setBit(this.occupied, square);
     
@@ -39,6 +46,12 @@ export class Board {
   }
 
   public revealSquare(square: Square) {
+    this.assertSquare(square);
+    if ((this.occupied & (1 << square)) === 0) {
+      throw new Error(`Cannot reveal empty square ${square}`);
+    }
+    if ((this.revealed & (1 << square)) !== 0) return;
+
     const piece = this.pieces[square];
     const color = getPieceColor(piece);
     const type = getPieceType(piece);
@@ -49,6 +62,9 @@ export class Board {
   }
 
   public removePiece(square: Square) {
+    this.assertSquare(square);
+    if ((this.occupied & (1 << square)) === 0) return;
+
     const piece = this.pieces[square];
     const color = getPieceColor(piece);
     const type = getPieceType(piece);
@@ -60,5 +76,11 @@ export class Board {
       this.typeBB[type] = clearBit(this.typeBB[type], square);
     }
     this.pieces[square] = 0;
+  }
+
+  private assertSquare(square: Square) {
+    if (!Number.isInteger(square) || square < 0 || square >= 32) {
+      throw new RangeError(`Square must be an integer from 0 to 31: ${square}`);
+    }
   }
 }

@@ -25,11 +25,21 @@ export class Game {
     addPieces(Color.Red);
     addPieces(Color.Black);
 
+    // Mulberry32 gives reproducible shuffles when a seed is supplied.
+    let state = seed === undefined ? 0 : seed >>> 0;
+    const random = seed === undefined
+      ? Math.random
+      : () => {
+          state = (state + 0x6D2B79F5) >>> 0;
+          let value = state;
+          value = Math.imul(value ^ (value >>> 15), value | 1);
+          value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+          return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+        };
+
     // Fisher-Yates shuffle
-    // In a real implementation we would use a seeded random number generator (PRNG) for reproducibility
     for (let i = pieces.length - 1; i > 0; i--) {
-      // Basic Math.random() for now. A seeded PRNG should be used later for AB Testing
-      const j = Math.floor(Math.random() * (i + 1));
+      const j = Math.floor(random() * (i + 1));
       [pieces[i], pieces[j]] = [pieces[j], pieces[i]];
     }
 
