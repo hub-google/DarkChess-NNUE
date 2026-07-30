@@ -8,7 +8,7 @@
 
 | Workflow 檔名 | 工作流名稱 | 觸發時機 | 主要任務與目標 |
 | :--- | :--- | :--- | :--- |
-| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 20 台 Worker 併發進行自我對弈，產生對局上傳至 Hugging Face 暫存區 |
+| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 15 台 Worker 併發進行自我對弈，產生對局上傳至 Hugging Face 暫存區 |
 | **`train.yml`** | 🤖 NNUE 自主訓練與評測流程 | 每日 UTC 00:00（或手動） | 清理並融合 Hugging Face 數據 ➔ 訓練挑戰者模型 ➔ SPRT 對決 ➔ 晉升並 Push |
 | **`deploy_pages.yml`** | 🌐 部署暗棋網頁端至 GitHub Pages | 收到新 `models/champion.nnue` 時 | 自動編譯 TypeScript / WASM / Vite 並更新線上 GitHub Pages 網站 |
 | **`cleanup.yml`** | 🧹 清理 Hugging Face 散檔 | 手動觸發 (`workflow_dispatch`) | 一次性或手動清理 HF `staging` 目錄下過多的對局散檔，避免超出儲存限制 |
@@ -19,14 +19,14 @@
 
 * **檔名路徑**：[`.github/workflows/self_play.yml`](file:///.github/workflows/self_play.yml)
 * **觸發條件**：Cron 定時執行 `0 */6 * * *`（每 6 小時）或 `workflow_dispatch`（手動觸發）。
-* **矩陣運算 (Matrix)**：開闢 20 個獨立 Runner 節點 (`worker_id`: 1 ~ 20)。
+* **矩陣運算 (Matrix)**：開闢 15 個獨立 Runner 節點 (`worker_id`: 1 ~ 15)。
 
 ### 📍 步驟與執行腳本明細：
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant W as Worker (1~20)
+    participant W as Worker (1~15)
     participant TS as src/workers/self_play.ts
     participant HF as Hugging Face Datasets
     
@@ -58,6 +58,12 @@ sequenceDiagram
 * **觸發條件**：Cron 定時執行 `0 0 * * *`（每天 UTC 00:00 / 台灣時間 08:00）或 `workflow_dispatch`（手動觸發）。
 
 ### 📍 步驟與執行腳本明細：
+
+> **⚠️ 前期模式 (Early Stage Mode) 注意事項**
+> 為了在開發前期加速模型更新迭代，目前實際套用的 `.github/workflows/train.yml` 採取了**精簡版**的流程：
+> - **省略 Node.js 及單機產資料步驟**：因為 `self_play.yml` 已在使用 15 台機器全天候產資料。
+> - **省略 SPRT 棋力對決**：直接跳過勝率驗證，讓訓練出來的挑戰者模型**無條件晉升**並 Push。
+> *(下方圖表與表格保留了系統「完整型態」的原始設計邏輯，待模型成熟後會將 `train.yml` 恢復為此完整流程。)*
 
 ```mermaid
 sequenceDiagram

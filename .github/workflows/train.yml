@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  train-and-validate:
-    name: 🏋️ 模型訓練與 SPRT 棋力對決評測
+  train-and-update:
+    name: 🏋️ 模型訓練與直接更新
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -31,37 +31,14 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: 🟢 步驟 4：設定 Node.js 執行環境 (Node.js 22)
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'
-
-    - name: 📦 步驟 5：安裝 Node.js / npm 相依套件
-      run: npm install
-
-    - name: 🎲 步驟 6：產生最新自我對弈資料並上傳至 staging 暫存區
-      env:
-        HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        NUM_BATCHES: "20"
-      run: |
-        echo "［進行中］開始產生 1000 局全新的自我對弈棋譜資料..."
-        mkdir -p output_data
-        npx tsx src/workers/self_play.ts
-        if [ "$(ls -A output_data/)" ]; then
-          echo "［進行中］將最新棋譜整合為單一檔案並上傳至 Hugging Face staging/fresh 數據庫..."
-          export PATH_IN_REPO="staging/fresh"
-          python src/workers/upload_batch.py
-          rm -rf output_data/*
-        fi
-
-    - name: 🔄 步驟 7：整合與重播緩衝區數據 (Consolidate Replay Buffer)
+    - name: 🔄 步驟 4：整合與重播緩衝區數據 (Consolidate Replay Buffer)
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
         echo "［進行中］整合 Hugging Face 上的暫存資料，維持 50 萬筆最新高質量 Replay Buffer..."
         python src/training/consolidate_buffer.py
 
-    - name: 📥 步驟 8：下載最新 50 萬筆 Replay Buffer 訓練集
+    - name: 📥 步驟 5：下載最新 50 萬筆 Replay Buffer 訓練集
       env:
         HF_TOKEN: ${{ secrets.HF_TOKEN }}
       run: |
@@ -69,28 +46,14 @@ jobs:
         mkdir -p datasets
         python -c "from huggingface_hub import hf_hub_download; import os, shutil; path = hf_hub_download(repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', filename='replay_buffer.jsonl.gz'); shutil.copy(path, 'datasets/replay_buffer.jsonl.gz')"
         
-    - name: 🧠 步驟 9：執行 Phase 2 - NNUE 模型神經網路訓練
+    - name: 🧠 步驟 6：執行 Phase 2 - NNUE 模型神經網路訓練
       run: |
         echo "［進行中］開始訓練全新的挑戰者模型 (models/challenger.nnue)..."
         python src/training/train.py
         
-    - name: ⚔️ 步驟 10：執行 Phase 3 - SPRT 棋力對決測試 (挑戰者 vs 衛冕者)
-      id: sprt
+    - name: 🏆 步驟 7：無條件晉升模型與 Git 自動 Commit 提交
       run: |
-        echo "［進行中］開始進行 SPRT (序貫機率比檢驗) 棋力檢驗..."
-        if [ ! -f models/champion.nnue ]; then
-          echo "［通知］尚未找到舊衛冕者模型，挑戰者模型自動通過認證升格！"
-          echo "PASSED=true" >> $GITHUB_ENV
-        else
-          echo "［通知］前期開發階段，暫時跳過 SPRT 檢定，挑戰者模型每日直接升格！"
-          echo "PASSED=true" >> $GITHUB_ENV
-          # python src/training/sprt_validation.py --champion models/champion.nnue --challenger models/challenger.nnue
-        fi
-        
-    - name: 🏆 步驟 11：執行 Phase 4 - 模型晉升與 Git 自動 Commit 提交
-      if: env.PASSED == 'true'
-      run: |
-        echo "［成功］挑戰者模型通過 SPRT 測試，正式晉升為新一代衛冕者模型！"
+        echo "［成功］由於是前期階段，跳過 SPRT 測試，新模型無條件晉升為衛冕者！"
         mv models/challenger.nnue models/champion.nnue
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
