@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        worker_id: [1, 2, 3, 4]
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
     steps:
       - uses: actions/checkout@v4
@@ -34,17 +34,30 @@ jobs:
         env:
           WORKER_ID: ${{ matrix.worker_id }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          BATCH_SIZE: "20"
-          NUM_BATCHES: "10"
-          MAX_SEARCH_DEPTH: "1"
+          BATCH_SIZE: "10"
+          NUM_BATCHES: "1"
+          MAX_SEARCH_DEPTH: "12"
           SELF_PLAY_TEMPERATURE: "0.8"
           EXPLORE_PLIES: "20"
         run: |
           mkdir -p output_data
           export DATE_STR
           DATE_STR=$(date +%Y%m%d)
-          python -u src/workers/self_play.py
-          python -u src/workers/upload_batch.py
+          
+          START_TIME=$(date +%s)
+          # GitHub Actions timeout is 6 hours (21600 seconds). We stop at 5.5 hours (19800 seconds).
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            if [ $ELAPSED -gt 19800 ]; then
+              echo "Elapsed time $ELAPSED seconds exceeds 19800. Stopping to avoid job timeout."
+              break
+            fi
+            
+            echo "Starting new batch. Elapsed time: $ELAPSED seconds."
+            python -u src/workers/self_play.py
+            python -u src/workers/upload_batch.py
+          done
 
       - name: Preserve data if upload failed
         if: failure()
