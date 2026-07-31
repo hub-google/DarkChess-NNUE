@@ -18,6 +18,11 @@ PIECE_TYPE = np.array([
     EMPTY_TYPE, EMPTY_TYPE
 ], dtype=np.int32)
 
+INITIAL_COUNTS = np.array(
+    [1, 2, 2, 2, 2, 2, 5, 1, 2, 2, 2, 2, 2, 5],
+    dtype=np.int32,
+)
+
 @njit
 def encode_move(from_sq, to_sq):
     return (from_sq << 5) | to_sq
@@ -47,6 +52,10 @@ class DarkChessBoardPy:
         self.hidden_bitboard = np.uint32(0xFFFFFFFF)
         self.occupied_bitboard = np.uint32(0)
         self.hidden_pieces = np.zeros(32, dtype=np.int32)
+        # Public belief state: how many pieces of each type are still face-down.
+        # Search and evaluation must use this array instead of inspecting
+        # hidden_pieces, which is private referee state.
+        self.remaining_counts = INITIAL_COUNTS.copy()
         self.side_to_move = NONE
         self.half_move_clock = 0
         self.history = []
@@ -61,11 +70,36 @@ class DarkChessBoardPy:
             np.random.shuffle(bag)
         else:
             bag = np.array(bag, dtype=np.int32)
-        self.hidden_pieces = bag
+        if bag.shape != (32,):
+            raise ValueError(f"bag must contain exactly 32 pieces, got {bag.shape}")
+        if np.any(bag < 0) or np.any(bag >= 14):
+            raise ValueError("bag contains an invalid piece id")
+        counts = np.bincount(bag, minlength=14).astype(np.int32)
+        if not np.array_equal(counts, INITIAL_COUNTS):
+            raise ValueError(f"bag has invalid inventory: {counts.tolist()}")
+        self.hidden_pieces = bag.copy()
+        self.remaining_counts = INITIAL_COUNTS.copy()
+
+    def clone(self):
+        board = object.__new__(DarkChessBoardPy)
+        board.piece_bitboards = self.piece_bitboards.copy()
+        board.hidden_bitboard = np.uint32(self.hidden_bitboard)
+        board.occupied_bitboard = np.uint32(self.occupied_bitboard)
+        board.hidden_pieces = self.hidden_pieces.copy()
+        board.remaining_counts = self.remaining_counts.copy()
+        board.side_to_move = int(self.side_to_move)
+        board.half_move_clock = int(self.half_move_clock)
+        board.history = list(self.history)
+        return board
         
     def get_snapshot(self):
         # We use a tuple for history since it's hashable and fast
-        return (tuple(self.piece_bitboards), self.hidden_bitboard, self.side_to_move)
+        return (
+            tuple(int(value) for value in self.piece_bitboards),
+            int(self.hidden_bitboard),
+            tuple(int(value) for value in self.remaining_counts),
+            int(self.side_to_move),
+        )
 
     def generate_legal_moves(self):
         # This function acts as a wrapper. The heavy lifting should be jitted.
@@ -76,15 +110,31 @@ class DarkChessBoardPy:
             self.side_to_move
         )
 
-    def make_move(self, move):
-        self.history.append(self.get_snapshot())
+    def make_move(self, move, flip_piece=None, validate=True):
+        move = int(move)
+        if validate and move not in set(int(m) for m in self.generate_legal_moves()):
+            raise ValueError(f"illegal move: {move}")
+
         from_sq, to_sq, is_flip = decode_move(move)
-        
+        flipped_piece = None
         if is_flip:
-            flipped_piece = self.hidden_pieces[from_sq]
+            flipped_piece = (
+                int(self.hidden_pieces[from_sq])
+                if flip_piece is None
+                else int(flip_piece)
+            )
+            if flipped_piece < 0 or flipped_piece >= 14:
+                raise ValueError(f"invalid flipped piece: {flipped_piece}")
+            if self.remaining_counts[flipped_piece] <= 0:
+                raise ValueError(f"piece {flipped_piece} is not available in the bag")
+
+        self.history.append(self.get_snapshot())
+
+        if is_flip:
             self.hidden_bitboard = clear_bit(self.hidden_bitboard, from_sq)
             self.piece_bitboards[flipped_piece] = set_bit(self.piece_bitboards[flipped_piece], from_sq)
             self.occupied_bitboard = set_bit(self.occupied_bitboard, from_sq)
+            self.remaining_counts[flipped_piece] -= 1
             self.half_move_clock = 0
             
             if self.side_to_move == NONE:
@@ -118,6 +168,48 @@ class DarkChessBoardPy:
                 
         if self.side_to_move != NONE:
             self.side_to_move = 1 - self.side_to_move
+
+    def hidden_probability(self, piece):
+        hidden_total = int(self.remaining_counts.sum())
+        if hidden_total == 0:
+            return 0.0
+        return float(self.remaining_counts[int(piece)]) / hidden_total
+
+    def repetition_count(self):
+        current = self.get_snapshot()
+        return 1 + sum(snapshot == current for snapshot in self.history)
+
+    def _color_piece_count(self, color):
+        visible = 0
+        hidden = 0
+        for piece in range(14):
+            if PIECE_COLOR[piece] == color:
+                visible += popcount(self.piece_bitboards[piece])
+                hidden += int(self.remaining_counts[piece])
+        return visible + hidden
+
+    def is_game_over(self):
+        red_count = self._color_piece_count(RED)
+        black_count = self._color_piece_count(BLACK)
+        if red_count == 0:
+            return True, -1.0
+        if black_count == 0:
+            return True, 1.0
+
+        if self.half_move_clock >= 60:
+            return True, 0.0
+        if self.repetition_count() >= 3:
+            return True, 0.0
+
+        # A face-down square is always a legal flip, so the expensive move
+        # generation is only needed once the bag is empty.
+        if (
+            self.side_to_move != NONE
+            and int(self.hidden_bitboard) == 0
+            and len(self.generate_legal_moves()) == 0
+        ):
+            return True, -1.0 if self.side_to_move == RED else 1.0
+        return False, 0.0
 
 @njit
 def _generate_legal_moves(piece_bitboards, hidden_bitboard, occupied_bitboard, side_to_move):

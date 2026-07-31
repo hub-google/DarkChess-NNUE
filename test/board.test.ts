@@ -33,3 +33,26 @@ test('makeMove rejects moves outside the legal move list', () => {
     const board = new DarkChessBoard();
     expect(() => board.makeMove(encodeMove(0, 1))).toThrow('Illegal move');
 });
+
+test('flipping updates the public remaining-piece probability', () => {
+    const board = new DarkChessBoard();
+    board.hiddenPieces[0] = Piece.R_KING;
+    board.makeMove(encodeMove(0, 0));
+
+    expect(board.remainingCounts[Piece.R_KING]).toBe(0);
+    expect(board.hiddenProbability(Piece.R_KING)).toBe(0);
+    expect(board.sideToMove).toBe(Color.BLACK);
+});
+
+test('a color with no visible or hidden pieces loses immediately', () => {
+    const board = new DarkChessBoard();
+    board.pieceBitboards.fill(0);
+    board.occupiedBitboard = 0;
+    board.hiddenBitboard = setBit(0, 0);
+    board.hiddenPieces.fill(Piece.B_PAWN);
+    board.remainingCounts.fill(0);
+    board.remainingCounts[Piece.B_PAWN] = 1;
+    board.sideToMove = Color.RED;
+
+    expect(board.isGameOver()).toEqual({ over: true, result: -1.0 });
+});

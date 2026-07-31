@@ -1,10 +1,9 @@
-name: ⚡ 分散式自我對弈數據生成流水線 (Distributed Self-Play Pipeline)
+name: Distributed belief-state self-play
 
-# 觸發條件：每 6 小時自動執行，或手動點擊觸發
 on:
   schedule:
-    - cron: '0 */6 * * *' # 每 6 小時觸發一次
-  workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: self-play
@@ -12,63 +11,46 @@ concurrency:
 
 jobs:
   self-play-worker:
-    name: 🤖 自我對弈運算節點 (Worker ${{ matrix.worker_id }})
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        # 開啟 15 個平行 Worker 節點進行數據生成，預留 5 個名額給其他任務 (如 train) 防止被 starvation
-        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
       fail-fast: false
-      
-    steps:
-    - name: 📥 步驟 1：檢出專案程式碼 (Checkout Code)
-      uses: actions/checkout@v4
-      
-    - name: 🟢 步驟 2：設定 Node.js 執行環境 (Node.js 22)
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'
+      matrix:
+        worker_id: [1, 2, 3, 4]
 
-    - name: 📦 步驟 3：安裝 Node.js / npm 相依套件
-      run: npm install
-      
-    - name: 🐍 步驟 4：設定 Python 執行環境 (Python 3.10)
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        
-    - name: 📦 步驟 5：安裝 Python 相依套件 (requirements.txt)
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-    - name: 🔄 步驟 6：持續產生自我對弈棋譜數據並每 10 分鐘上傳至 Hugging Face
-      env:
-        WORKER_ID: ${{ matrix.worker_id }}
-        HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      run: |
-        echo "［啟動］ Worker ${WORKER_ID} 開始執行持續性自我對弈數據生成..."
-        mkdir -p output_data
-        
-        START_TIME=$(date +%s)
-        MAX_DURATION=19800 # 最長執行 5.5 小時以防工作階段超時
-        
-        while true; do
-          CURRENT_TIME=$(date +%s)
-          ELAPSED=$(($CURRENT_TIME - $START_TIME))
-          
-          if [ $ELAPSED -ge $MAX_DURATION ]; then
-            echo "［結束］已達 5.5 小時上限，安全停止 Worker ${WORKER_ID}。"
-            break
-          fi
-          
-          echo "［ Worker ${WORKER_ID} ］開始產生 10 分鐘批次的棋譜資料..."
-          env NUM_BATCHES=200 npx tsx src/workers/self_play.ts
-          
-          if [ "$(ls -A output_data/)" ]; then
-            export DATE_STR=$(date +%Y%m%d)
-            echo "［ Worker ${WORKER_ID} ］整合批次數據並上傳至 Hugging Face (staging/worker_${WORKER_ID}/${DATE_STR})..."
-            python src/workers/upload_batch.py || echo "［警告］上傳失敗，下一輪重試"
-            rm -rf output_data/*
-          fi
-        done
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate and upload self-play
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BATCH_SIZE: "20"
+          NUM_BATCHES: "10"
+          MAX_SEARCH_DEPTH: "1"
+          SELF_PLAY_TEMPERATURE: "0.8"
+          EXPLORE_PLIES: "20"
+        run: |
+          mkdir -p output_data
+          export DATE_STR
+          DATE_STR=$(date +%Y%m%d)
+          python -u src/workers/self_play.py
+          python -u src/workers/upload_batch.py
+
+      - name: Preserve data if upload failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-play-recovery-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: output_data/
+          if-no-files-found: ignore
+          retention-days: 7

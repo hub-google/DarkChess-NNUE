@@ -24,8 +24,7 @@ CHUNK_SIZE = 500  # Max delete operations per commit
 def consolidate():
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
-        print("ERROR: HF_TOKEN not set")
-        return
+        raise RuntimeError("HF_TOKEN not set")
 
     api = HfApi(token=hf_token)
     temp_dir = "temp_consolidate"
@@ -43,8 +42,7 @@ def consolidate():
     try:
         all_files = list(api.list_repo_files(repo_id=REPO_ID, repo_type="dataset"))
     except Exception as e:
-        print(f"Error listing repo files: {e}")
-        return
+        raise RuntimeError(f"Error listing repo files: {e}") from e
 
     # Separate into: existing replay buffer + staging files
     jsonl_files = [f for f in all_files if f.endswith('.jsonl.gz')]
@@ -57,6 +55,7 @@ def consolidate():
 
     # 2. Download and read existing replay buffer (if any)
     all_games = []
+    successful_staging_files = []
     if has_existing_buffer:
         print("2. Downloading existing replay buffer...")
         try:
@@ -90,6 +89,7 @@ def consolidate():
                         if line_str:
                             all_games.append(line_str)
                 downloaded += 1
+                successful_staging_files.append(sf)
             except Exception as e:
                 failed += 1
                 if failed <= 5:
@@ -106,8 +106,30 @@ def consolidate():
     print(f"   Total game records collected: {len(all_games)}")
 
     if not all_games:
-        print("No games found. Nothing to consolidate.")
-        return
+        raise RuntimeError("No games found; refusing to replace the replay buffer.")
+
+    # A run can upload the new replay buffer and then fail before deleting
+    # staging files. De-duplicate by immutable game id before applying the
+    # sliding window so the retry does not overweight those games.
+    deduplicated = {}
+    invalid_records = 0
+    for game_str in all_games:
+        try:
+            game = json.loads(game_str)
+            game_id = game["id"]
+            if not isinstance(game_id, str) or not game_id:
+                raise ValueError("missing game id")
+            deduplicated[game_id] = game_str
+        except Exception:
+            invalid_records += 1
+    all_games = list(deduplicated.values())
+    all_games.sort(key=lambda line: int(json.loads(line).get("ts", 0)))
+    print(
+        f"   De-duplicated replay data: {len(all_games)} unique games, "
+        f"{invalid_records} invalid records skipped."
+    )
+    if not all_games:
+        raise RuntimeError("No valid games remain after replay validation.")
 
     # 4. Apply sliding window cap
     if len(all_games) > MAX_REPLAY_GAMES:
@@ -115,6 +137,9 @@ def consolidate():
         all_games = all_games[-MAX_REPLAY_GAMES:]
     else:
         print(f"4. Game count ({len(all_games)}) within cap, keeping all.")
+
+    # Train on the most recent policy first when a nightly sample cap is used.
+    all_games.reverse()
 
     # 5. Write consolidated replay buffer
     print(f"5. Writing consolidated buffer ({len(all_games)} games)...")
@@ -144,13 +169,15 @@ def consolidate():
                 print(f"   Upload error (attempt {attempt}/5): {e}. Retrying in {wait}s...")
                 time.sleep(wait)
             else:
-                print(f"   FATAL: Upload failed after 5 attempts: {e}")
-                return
+                raise RuntimeError(f"Upload failed after 5 attempts: {e}") from e
 
     # 7. Delete staging files from HF repo
-    if staging_files:
-        print(f"7. Cleaning up {len(staging_files)} staging files from HF...")
-        chunks = [staging_files[i:i + CHUNK_SIZE] for i in range(0, len(staging_files), CHUNK_SIZE)]
+    if successful_staging_files:
+        print(f"7. Cleaning up {len(successful_staging_files)} downloaded staging files from HF...")
+        chunks = [
+            successful_staging_files[i:i + CHUNK_SIZE]
+            for i in range(0, len(successful_staging_files), CHUNK_SIZE)
+        ]
 
         for i, chunk in enumerate(chunks):
             delete_ops = [CommitOperationDelete(path_in_repo=f) for f in chunk]

@@ -9,6 +9,9 @@ export class DarkChessBoard {
     // The actual hidden pieces for each square. Index is square (0-31).
     // If a square is flipped, its value here is not used anymore.
     hiddenPieces: Piece[];
+    // Public belief state. The AI may read these counts, but it must never
+    // inspect hiddenPieces when choosing a move.
+    remainingCounts: number[];
     
     sideToMove: Color;
     halfMoveClock: number; // For 50-move rule
@@ -19,6 +22,7 @@ export class DarkChessBoard {
         this.hiddenBitboard = 0xFFFFFFFF; // All 32 bits set
         this.occupiedBitboard = 0;
         this.hiddenPieces = new Array(32).fill(Piece.EMPTY);
+        this.remainingCounts = [1, 2, 2, 2, 2, 2, 5, 1, 2, 2, 2, 2, 2, 5];
         this.sideToMove = Color.NONE; // First move determines color
         this.halfMoveClock = 0;
         this.history = [];
@@ -40,6 +44,19 @@ export class DarkChessBoard {
         for (let i = 0; i < 32; i++) {
             this.hiddenPieces[i] = bag[i];
         }
+    }
+
+    public clone(): DarkChessBoard {
+        const board = Object.create(DarkChessBoard.prototype) as DarkChessBoard;
+        board.pieceBitboards = [...this.pieceBitboards];
+        board.hiddenBitboard = this.hiddenBitboard >>> 0;
+        board.occupiedBitboard = this.occupiedBitboard >>> 0;
+        board.hiddenPieces = [...this.hiddenPieces];
+        board.remainingCounts = [...this.remainingCounts];
+        board.sideToMove = this.sideToMove;
+        board.halfMoveClock = this.halfMoveClock;
+        board.history = [...this.history];
+        return board;
     }
 
     private canCapture(attacker: Piece, victim: Piece): boolean {
@@ -65,7 +82,7 @@ export class DarkChessBoard {
         }
 
         // 2. Regular Moves & Captures (only if side is decided)
-        if (this.sideToMove !== Color.NONE) {
+        if (this.sideToMove !== Color.NONE && this.hiddenBitboard === 0) {
             const allyColor = this.sideToMove;
             const enemyColor = 1 - allyColor; // 0->1, 1->0
             
@@ -154,26 +171,36 @@ export class DarkChessBoard {
         }
     }
 
-    public makeMove(move: MoveId) {
+    public makeMove(move: MoveId, flippedPieceOverride?: Piece) {
         if (!this.generateLegalMoves().includes(move)) {
             throw new Error(`Illegal move: ${move}`);
         }
 
         const { from, to, isFlip } = decodeMove(move);
-        
-        // Save history for repetition check
+        let flippedPiece: Piece | undefined;
+        if (isFlip) {
+            flippedPiece = flippedPieceOverride ?? this.hiddenPieces[from];
+            if (flippedPiece < Piece.R_KING || flippedPiece > Piece.B_PAWN) {
+                throw new Error(`Invalid flipped piece: ${flippedPiece}`);
+            }
+            if (this.remainingCounts[flippedPiece] <= 0) {
+                throw new Error(`Piece ${flippedPiece} is not available in the bag`);
+            }
+        }
+
+        // Save history only after all validation has passed.
         this.history.push(this.getSnapshot());
 
         if (isFlip) {
-            const flippedPiece = this.hiddenPieces[from];
             this.hiddenBitboard = clearBit(this.hiddenBitboard, from);
-            this.pieceBitboards[flippedPiece] = setBit(this.pieceBitboards[flippedPiece], from);
+            this.pieceBitboards[flippedPiece!] = setBit(this.pieceBitboards[flippedPiece!], from);
             this.occupiedBitboard = setBit(this.occupiedBitboard, from);
+            this.remainingCounts[flippedPiece!]--;
             this.halfMoveClock = 0; // Reset 50-move rule
             
             // If first move, assign color
             if (this.sideToMove === Color.NONE) {
-                this.sideToMove = PIECE_COLOR[flippedPiece]; // First player controls the color they flipped
+                this.sideToMove = PIECE_COLOR[flippedPiece!]; // First player controls the color they flipped
             }
         } else {
             // Find moving piece
@@ -220,29 +247,29 @@ export class DarkChessBoard {
     }
 
     private getSnapshot(): string {
-        return `${this.pieceBitboards.join(',')}|${this.hiddenBitboard}|${this.sideToMove}`;
+        return `${this.pieceBitboards.join(',')}|${this.hiddenBitboard}|${this.remainingCounts.join(',')}|${this.sideToMove}`;
+    }
+
+    public hiddenProbability(piece: Piece): number {
+        const total = this.remainingCounts.reduce((sum, count) => sum + count, 0);
+        return total === 0 ? 0 : this.remainingCounts[piece] / total;
     }
 
     public isGameOver(): { over: boolean, result: number } {
-        if (this.halfMoveClock >= 50) return { over: true, result: 0.0 }; // Draw
-        
-        // Check 3-fold repetition
-        let repCount = 0;
+        // A color loses as soon as it has no visible or face-down pieces left.
+        // This is public information because remainingCounts is known.
+        if (this.colorPieceCount(Color.RED) === 0) return { over: true, result: -1.0 };
+        if (this.colorPieceCount(Color.BLACK) === 0) return { over: true, result: 1.0 };
+
+        if (this.halfMoveClock >= 60) return { over: true, result: 0.0 };
+
+        // Check 3-fold repetition (two previous occurrences + current).
+        let repCount = 1;
         const currentSnapshot = this.getSnapshot();
         for (const snap of this.history) {
             if (snap === currentSnapshot) repCount++;
         }
-        if (repCount >= 2) return { over: true, result: 0.0 }; // Draw (2 past + 1 current = 3)
-        
-        // Check if one side is wiped out
-        const redAlive = this.hasAlivePieces(Color.RED);
-        const blackAlive = this.hasAlivePieces(Color.BLACK);
-        const hiddenCount = popcount(this.hiddenBitboard);
-        
-        if (hiddenCount === 0) {
-            if (!redAlive) return { over: true, result: -1.0 }; // Assuming perspective is Red (loss)
-            if (!blackAlive) return { over: true, result: 1.0 }; // Assuming perspective is Red (win)
-        }
+        if (repCount >= 3) return { over: true, result: 0.0 };
         
         // Check if trapped (no legal moves for current player)
         if (this.sideToMove !== Color.NONE) {
@@ -256,10 +283,14 @@ export class DarkChessBoard {
         return { over: false, result: 0.0 };
     }
 
-    private hasAlivePieces(color: Color): boolean {
+    private colorPieceCount(color: Color): number {
+        let count = 0;
         for (let i = 0; i < 14; i++) {
-            if (PIECE_COLOR[i] === color && this.pieceBitboards[i] > 0) return true;
+            if (PIECE_COLOR[i] === color) {
+                count += popcount(this.pieceBitboards[i]);
+                count += this.remainingCounts[i];
+            }
         }
-        return false;
+        return count;
     }
 }

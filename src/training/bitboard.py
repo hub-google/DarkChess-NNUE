@@ -6,7 +6,6 @@ ADJACENT_MASKS = np.zeros(32, dtype=np.uint32)
 ROW_MASKS = np.zeros(4, dtype=np.uint32)
 COL_MASKS = np.zeros(8, dtype=np.uint32)
 
-@njit
 def init_masks():
     for y in range(4):
         for x in range(8):
@@ -29,7 +28,7 @@ def set_bit(bb, index):
 
 @njit
 def clear_bit(bb, index):
-    return bb & np.uint32(~(1 << index))
+    return bb & np.uint32(0xFFFFFFFF ^ (1 << index))
 
 @njit
 def has_bit(bb, index):
@@ -52,7 +51,7 @@ def iterate_bits(bb):
     count = 0
     n = bb
     while n != 0:
-        isolated = n & -n
+        isolated = n & (np.uint32(~n) + np.uint32(1))
         indices[count] = popcount(isolated - 1)
         count += 1
         n ^= isolated

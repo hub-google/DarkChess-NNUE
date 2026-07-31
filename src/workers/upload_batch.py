@@ -16,13 +16,14 @@ def merge_and_upload():
 
     # 1. Merge all local .jsonl.gz files into a single consolidated file
     merged_lines = []
+    valid_source_files = []
     for f in files:
         try:
             with gzip.open(f, 'rt', encoding='utf-8') as gz:
                 merged_lines.extend(gz.readlines())
+            valid_source_files.append(f)
         except Exception as e:
             print(f"Warning: skipping corrupted file {f}: {e}")
-        os.remove(f)
 
     if not merged_lines:
         print("No valid game records found after merging.")
@@ -53,7 +54,10 @@ def merge_and_upload():
     remote_path = f"{path_in_repo}/{consolidated_filename}"
     print(f"Uploading {consolidated_file} -> {remote_path} ...")
 
-    api = HfApi()
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise RuntimeError("HF_TOKEN is required")
+    api = HfApi(token=hf_token)
     max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
@@ -77,8 +81,14 @@ def merge_and_upload():
                 time.sleep(10 * attempt)
             else:
                 print(f"Upload failed after {max_retries} attempts: {e}")
+                if os.path.exists(consolidated_file):
+                    os.remove(consolidated_file)
                 raise
 
+    # Delete local source data only after the remote upload succeeds.
+    for source_file in valid_source_files:
+        if os.path.abspath(source_file) != os.path.abspath(consolidated_file):
+            os.remove(source_file)
     os.remove(consolidated_file)
 
 

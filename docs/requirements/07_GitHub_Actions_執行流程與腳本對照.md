@@ -8,7 +8,7 @@
 
 | Workflow 檔名 | 工作流名稱 | 觸發時機 | 主要任務與目標 |
 | :--- | :--- | :--- | :--- |
-| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 15 台 Worker 併發進行自我對弈，產生對局上傳至 Hugging Face 暫存區 |
+| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 4 台 Worker 以公開資訊機率搜尋進行對弈，產生對局上傳至 Hugging Face 暫存區 |
 | **`train.yml`** | 🤖 NNUE 自主訓練與評測流程 | 每日 UTC 00:00（或手動） | 清理並融合 Hugging Face 數據 ➔ 訓練挑戰者模型 ➔ SPRT 對決 ➔ 晉升並 Push |
 | **`deploy_pages.yml`** | 🌐 部署暗棋網頁端至 GitHub Pages | 收到新 `models/champion.nnue` 時 | 自動編譯 TypeScript / WASM / Vite 並更新線上 GitHub Pages 網站 |
 | **`cleanup.yml`** | 🧹 清理 Hugging Face 散檔 | 手動觸發 (`workflow_dispatch`) | 一次性或手動清理 HF `staging` 目錄下過多的對局散檔，避免超出儲存限制 |
@@ -30,8 +30,8 @@ sequenceDiagram
     participant TS as src/workers/self_play.ts
     participant HF as Hugging Face Datasets
     
-    W->>TS: 執行 npx tsx self_play.ts (NUM_BATCHES=200)
-    TS-->>W: 產生對局檔寫入 output_data/*.jsonl.gz
+    W->>TS: 執行 Python self_play.py
+    TS-->>W: 以 champion 或 bootstrap evaluator 產生 output_data/*.jsonl.gz
     W->>HF: 執行 HfApi().upload_folder() 上傳至 staging/worker_${WORKER_ID}
     W-->>W: 清空 output_data/ 避免磁爆
 ```
@@ -42,7 +42,7 @@ sequenceDiagram
    * **環境變數**：`WORKER_ID=${matrix.worker_id}`, `HF_TOKEN`, `MAX_DURATION=19800` (最長執行 5.5 小時防止超時)。
    * **執行腳本 1**：[`src/workers/self_play.ts`](file:///src/workers/self_play.ts)
      * **指令**：`env NUM_BATCHES=200 npx tsx src/workers/self_play.ts`
-     * **功能**：讀取現有 `models/champion.nnue`（若存在），利用 Alpha-Beta / Star 搜尋進行對戰，每批次產生 200 局棋譜。
+   * **功能**：讀取現有 `models/champion.nnue`（若存在），以不讀取真實底牌的 chance-node 搜尋進行對戰；無 champion 時才使用公開資訊 material evaluator。
      * **輸出路徑**：本地 `output_data/selfplay_worker_${WORKER_ID}_${timestamp}.jsonl.gz`
    * **執行腳本 2 (Python 行內合併與上傳碼)**：
      * **指令**：`python -c "import os, glob, gzip... HfApi().upload_folder(...)"`
@@ -59,11 +59,8 @@ sequenceDiagram
 
 ### 📍 步驟與執行腳本明細：
 
-> **⚠️ 前期模式 (Early Stage Mode) 注意事項**
-> 為了在開發前期加速模型更新迭代，目前實際套用的 `.github/workflows/train.yml` 採取了**精簡版**的流程：
-> - **省略 Node.js 及單機產資料步驟**：因為 `self_play.yml` 已在使用 15 台機器全天候產資料。
-> - **省略 SPRT 棋力對決**：直接跳過勝率驗證，讓訓練出來的挑戰者模型**無條件晉升**並 Push。
-> *(下方圖表與表格保留了系統「完整型態」的原始設計邏輯，待模型成熟後會將 `train.yml` 恢復為此完整流程。)*
+> **安全晉升原則**
+> 除首次尚無 champion 的 bootstrap 外，所有 challenger 都必須跨越配對 SPRT 的 H1 界線才可晉升。零資料、資料損壞、驗證未決或 H0 都不得覆蓋 champion。
 
 ```mermaid
 sequenceDiagram
@@ -94,8 +91,8 @@ sequenceDiagram
 | **6** | 產生最新批次資料 | `npx tsx src/workers/self_play.ts` | 現有模型 | `output_data/` ➔ HF `staging/fresh` | 產生並合併為單檔上傳，補充訓練前最新 1000 局對弈資料 |
 | **7** | **融合並清空 HF 暫存區** | `python src/training/consolidate_buffer.py` | HF `staging/*` 所有散檔 | HF 根目錄 `replay_buffer.jsonl.gz` | **解法核心**：讀入所有對局，滑動窗口保留最新 50 萬局，打包成 1 個壓縮檔，並分批**刪除 HF 上所有的 `staging/*` 散檔** |
 | **8** | 下載完整訓練集 | Python `hf_hub_download()` | HF `hub-google/DarkChess-NNUE-Data` | 本地 `datasets/replay_buffer.jsonl.gz` | 精確下載單一整合大檔至本地，防範 429 Too Many Requests 限流 |
-| **9** | **NNUE 模型訓練** | `python src/training/train.py` | `datasets/replay_buffer.jsonl.gz` | `models/challenger.nnue` | 讀取 50 萬局進行 5~10 Epochs 的 PyTorch (AdamW + TD-Learning) 訓練 |
-| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true`) | 進行 1,000 局 Paired 鏡像對決，若挑戰者勝率顯著較高，設定通過標記。<br>*(註：目前為前期開發階段，暫時跳過 SPRT 檢測，強制設定為通過，讓每日產出的模型直接升格)* |
+| **9** | **NNUE 模型訓練** | `python src/training/train.py` | `datasets/replay_buffer.jsonl.gz` + 現有 champion | `models/challenger.nnue` | 從 champion 續訓；目前預設 batch 1024、3 epochs，並混合最終勝負與自我對弈 root value |
+| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true/false`) | 使用相同底盤與相同首翻格的雙局配對，正確維持先後手模型身分並進行序貫檢定；未達 H1 一律不晉升 |
 | **11** | **模型晉升與 Push** | Shell bash & Git CLI | `models/challenger.nnue` | `models/champion.nnue` ➔ GitHub `master` Branch | 覆蓋衛冕者模型，`git commit` 並 `git push`。這會進一步觸發 `deploy_pages.yml` |
 
 ---
