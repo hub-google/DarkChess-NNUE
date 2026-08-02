@@ -28,7 +28,12 @@ CHUNK_SIZE = 500  # Max delete operations per commit
 
 def staging_timestamp(path):
     match = re.search(r"(?:batch|data)_(\d+)", path)
-    return int(match.group(1)) if match else 0
+    if not match:
+        return 0
+    timestamp = int(match.group(1))
+    # Historical data_* names used milliseconds while the current batch_*
+    # uploader uses seconds. Normalize before comparing with the watermark.
+    return timestamp // 1000 if timestamp >= 100_000_000_000 else timestamp
 
 
 def list_recent_staging_files(api):
@@ -171,6 +176,11 @@ def consolidate():
                     print(f"   Progress: {i}/{len(staging_files)} files processed, accumulated {len(all_games)} games so far...")
 
         print(f"   Downloaded {downloaded} files, skipped {failed} files.")
+        if failed:
+            raise RuntimeError(
+                f"Failed to download {failed} of {len(staging_files)} staging files; "
+                "refusing to update replay buffer or watermark."
+            )
     else:
         print("3. No staging files to process.")
 
