@@ -6,8 +6,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: self-play
-  cancel-in-progress: true
+  # Cleanup uses the same lock so staging cannot change while its immutable
+  # source tree is being archived and verified.
+  group: hf-staging-writer
+  cancel-in-progress: false
 
 jobs:
   self-play-worker:

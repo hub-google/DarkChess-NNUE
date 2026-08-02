@@ -4,64 +4,37 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: hf-full-archive
+  group: hf-staging-writer
   cancel-in-progress: false
 
 jobs:
-  archive-shard:
-    name: Archive ${{ matrix.shard }}
+  archive:
+    name: Bulk archive immutable staging tree
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 21
-      matrix:
-        shard:
-          - fresh
-          - worker_1
-          - worker_2
-          - worker_3
-          - worker_4
-          - worker_5
-          - worker_6
-          - worker_7
-          - worker_8
-          - worker_9
-          - worker_10
-          - worker_11
-          - worker_12
-          - worker_13
-          - worker_14
-          - worker_15
-          - worker_16
-          - worker_17
-          - worker_18
-          - worker_19
-          - worker_20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: pip install huggingface_hub
-      - name: Merge and archive shard
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          ARCHIVE_SHARD: ${{ matrix.shard }}
-        run: python -u src/workers/archive_hf_shard.py
 
-  finalize:
-    name: Verify archive and clear staging
-    needs: archive-shard
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - run: pip install huggingface_hub
-      - name: Verify every shard then delete staging
+
+      - name: Install Hugging Face and Git-Xet clients
+        run: |
+          python -m pip install --upgrade "huggingface_hub>=0.32"
+          curl --proto '=https' --tlsv1.2 -sSf \
+            https://raw.githubusercontent.com/huggingface/xet-core/main/git_xet/install.sh | sh
+          git-xet --version
+          git lfs install
+
+      - name: Authenticate Git without exposing the token in the clone URL
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -u src/workers/finalize_hf_archive.py
+        run: |
+          git config --global credential.helper store
+          hf auth login --token "$HF_TOKEN" --add-to-git-credential
+
+      - name: Sparse clone, merge, verify, and clear staging
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/workers/archive_hf_shard.py
