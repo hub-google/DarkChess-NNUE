@@ -46,8 +46,6 @@ function App() {
     current.play({ from: current.selected, to: index }); refresh()
   }
 
-  // Do not depend on `thinking`: changing it used to run the cleanup and cancel
-  // this timer before the AI could ever make its move.
   useEffect(() => {
     if (human === Color.NONE || game.isOver || game.turn === human) return
     let cancelled = false
@@ -67,13 +65,13 @@ function App() {
     <main className="app-shell">
       <header className="topbar">
         <div><span className="brand-mark">暗</span><strong>DarkChess Lab</strong></div>
-        <span className="build-badge"><i /> AI 对弈公开测试</span>
+        <span className="build-badge"><i /> AI 對弈公開測試</span>
       </header>
       <section className="game-layout">
         <Sidebar game={game} human={human} thinking={thinking} model={model} modelError={modelError} onReset={reset} />
         <BoardView game={game} human={human} thinking={thinking} onSquare={clickSquare} />
       </section>
-      <footer>台湾暗棋 · 公开自我对弈研究计划</footer>
+      <footer>台灣暗棋 · 公開自我對弈研究計畫</footer>
     </main>
   )
 }

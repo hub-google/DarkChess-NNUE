@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from huggingface_hub import CommitOperationDelete, HfApi, hf_hub_download
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
+MAX_REPLAY_BYTES = int(os.environ.get("MAX_REPLAY_BUFFER_BYTES", str(2 * 1024**3)))
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 BUFFER_FILE = "replay_buffer.jsonl.gz"
 WATERMARK_FILE = "consolidation_watermark.txt"
@@ -98,7 +99,30 @@ def validate_buffer(path, expected_count):
         )
     if count > MAX_REPLAY_GAMES:
         raise RuntimeError(f"replay buffer exceeds the {MAX_REPLAY_GAMES}-game cap")
+    if os.path.getsize(path) > MAX_REPLAY_BYTES:
+        raise RuntimeError(
+            f"replay buffer exceeds the {MAX_REPLAY_BYTES}-byte compressed-size cap"
+        )
     return count
+
+
+def write_size_bounded_buffer(path, newest_first_games):
+    """Write newest games and discard oldest games until both caps are met."""
+    retained = list(newest_first_games[:MAX_REPLAY_GAMES])
+    while retained:
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            for game_str in retained:
+                handle.write(game_str + "\n")
+        size = os.path.getsize(path)
+        if size <= MAX_REPLAY_BYTES:
+            return retained, size
+        # Compressed size is close to proportional for a large JSONL stream.
+        # Keep a safety margin, then repeat to enforce the exact hard limit.
+        keep = max(1, int(len(retained) * MAX_REPLAY_BYTES / size * 0.98))
+        if keep >= len(retained):
+            keep = len(retained) - 1
+        retained = retained[:keep]
+    raise RuntimeError("No replay game fits within the compressed-size cap")
 
 
 def path_exists(api, path):
@@ -336,13 +360,11 @@ def consolidate():
     # Train on the most recent policy first when a nightly sample cap is used.
     all_games.reverse()
 
-    # 5. Write consolidated replay buffer
-    print(f"5. Writing consolidated buffer ({len(all_games)} games)...")
-    with gzip.open(output_path, 'wt', encoding='utf-8') as gz:
-        for game_str in all_games:
-            gz.write(game_str + '\n')
-
-    file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    # 5. Enforce both a game-count window and a compressed-byte ceiling. This
+    # prevents unusually long records from growing storage back into tens of GB.
+    print(f"5. Writing size-bounded buffer ({len(all_games)} candidate games)...")
+    all_games, file_size = write_size_bounded_buffer(output_path, all_games)
+    file_size_mb = file_size / (1024 * 1024)
     print(f"   Buffer file: {output_path} ({file_size_mb:.1f} MB)")
 
     # 6. Upload the consolidated buffer

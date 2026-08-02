@@ -122,7 +122,7 @@ class DarkChessDataset(IterableDataset):
         self,
         files,
         input_size=CURRENT_INPUT_SIZE,
-        max_positions_per_game=24,
+        max_positions_per_game=4,
         max_samples=2_000_000,
     ):
         self.files = files
@@ -225,8 +225,16 @@ def main():
     # Replay Buffer mechanism (Sliding window up to 500k games)
     print("Replay buffer configured. Max capacity: 500,000 games.")
     
-    max_positions = int(os.environ.get("MAX_POSITIONS_PER_GAME", "24"))
+    # Four positions per game guarantees that the 500k-game replay window can
+    # be traversed completely within the default two-million-sample budget.
+    max_positions = int(os.environ.get("MAX_POSITIONS_PER_GAME", "4"))
     max_samples = int(os.environ.get("MAX_TRAINING_SAMPLES", "2000000"))
+    if max_positions * 500_000 > max_samples:
+        raise RuntimeError(
+            "Training sample budget cannot cover the complete 500,000-game "
+            "replay window; lower MAX_POSITIONS_PER_GAME or raise "
+            "MAX_TRAINING_SAMPLES."
+        )
     dataset = DarkChessDataset(
         files,
         input_size=CURRENT_INPUT_SIZE,

@@ -50,6 +50,8 @@ jobs:
           BATCH_SIZE: "1024"
           TRAINING_EPOCHS: "3"
           LEARNING_RATE: "0.0001"
+          MAX_POSITIONS_PER_GAME: "4"
+          MAX_TRAINING_SAMPLES: "2000000"
         run: python -u src/training/train.py
 
       - name: Validate challenger
