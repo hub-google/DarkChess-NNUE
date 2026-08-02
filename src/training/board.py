@@ -59,6 +59,12 @@ class DarkChessBoardPy:
         self.side_to_move = NONE
         self.half_move_clock = 0
         self.history = []
+        # Stable public identities (the square where a piece started).  These
+        # let the referee distinguish two pieces of the same type when applying
+        # the perpetual-chase rule.
+        self.token_at_square = np.arange(32, dtype=np.int32)
+        self.chase_threats = []
+        self.pending_chase = None
         self._init_random_board(bag)
         
     def _init_random_board(self, bag=None):
@@ -90,6 +96,9 @@ class DarkChessBoardPy:
         board.side_to_move = int(self.side_to_move)
         board.half_move_clock = int(self.half_move_clock)
         board.history = list(self.history)
+        board.token_at_square = self.token_at_square.copy()
+        board.chase_threats = list(self.chase_threats)
+        board.pending_chase = self.pending_chase
         return board
         
     def get_snapshot(self):
@@ -103,12 +112,119 @@ class DarkChessBoardPy:
 
     def generate_legal_moves(self):
         # This function acts as a wrapper. The heavy lifting should be jitted.
-        return _generate_legal_moves(
+        moves = _generate_legal_moves(
             self.piece_bitboards, 
             self.hidden_bitboard, 
             self.occupied_bitboard, 
             self.side_to_move
         )
+        if self.pending_chase is None:
+            return moves
+        return np.array(
+            [int(move) for move in moves if not self._continues_forbidden_chase(int(move))],
+            dtype=np.int32,
+        )
+
+    def _piece_at(self, square):
+        for piece in range(14):
+            if has_bit(self.piece_bitboards[piece], square):
+                return piece
+        return -1
+
+    def _square_of_token(self, token):
+        matches = np.flatnonzero(self.token_at_square == int(token))
+        return int(matches[0]) if len(matches) else -1
+
+    def _can_attack(self, attacker_sq, target_sq, occupied=None):
+        attacker = self._piece_at(attacker_sq)
+        victim = self._piece_at(target_sq)
+        if attacker < 0 or victim < 0 or PIECE_COLOR[attacker] == PIECE_COLOR[victim]:
+            return False
+        if PIECE_TYPE[attacker] != CANNON:
+            return bool(has_bit(ADJACENT_MASKS[attacker_sq], target_sq) and can_capture(attacker, victim))
+        if attacker_sq // 8 != target_sq // 8 and attacker_sq % 8 != target_sq % 8:
+            return False
+        step = (1 if target_sq > attacker_sq else -1) if attacker_sq // 8 == target_sq // 8 else (8 if target_sq > attacker_sq else -8)
+        blockers = int(self.occupied_bitboard | self.hidden_bitboard) if occupied is None else int(occupied)
+        screens = 0
+        square = attacker_sq + step
+        while square != target_sq:
+            if (blockers >> square) & 1:
+                screens += 1
+            square += step
+        return screens == 1
+
+    def _threatened_tokens(self, attacker_sq):
+        result = []
+        for target_sq in range(32):
+            if self._can_attack(attacker_sq, target_sq):
+                result.append(int(self.token_at_square[target_sq]))
+        return result
+
+    def _continues_forbidden_chase(self, move):
+        attacker_token, target_token, count, _, _route = self.pending_chase
+        from_sq, to_sq, is_flip = decode_move(move)
+        if is_flip or int(self.token_at_square[from_sq]) != attacker_token:
+            return False
+        # Capturing the chased piece ends the chase; it is never a forbidden chase move.
+        if has_bit(self.occupied_bitboard, to_sq):
+            return False
+        target_sq = self._square_of_token(target_token)
+        if target_sq < 0:
+            return False
+        attacker = self._piece_at(from_sq)
+        victim = self._piece_at(target_sq)
+        if attacker < 0 or victim < 0:
+            return False
+        continues = False
+        if PIECE_TYPE[attacker] != CANNON:
+            continues = bool(has_bit(ADJACENT_MASKS[to_sq], target_sq) and can_capture(attacker, victim))
+        else:
+            occupied = int(self.occupied_bitboard | self.hidden_bitboard)
+            occupied &= ~(1 << from_sq)
+            occupied |= 1 << to_sq
+            if to_sq // 8 == target_sq // 8 or to_sq % 8 == target_sq % 8:
+                step = (1 if target_sq > to_sq else -1) if to_sq // 8 == target_sq // 8 else (8 if target_sq > to_sq else -8)
+                screens = 0
+                square = to_sq + step
+                while square != target_sq:
+                    screens += (occupied >> square) & 1
+                    square += step
+                continues = screens == 1
+        if not continues:
+            return False
+        route = self.pending_chase[4]
+        return len(route) != len(set(route))
+
+    def _update_chase(self, mover, moved_token, is_flip, is_capture):
+        old_threats = self.chase_threats
+        old_pending = self.pending_chase
+        self.chase_threats = []
+        self.pending_chase = None
+        if is_flip or is_capture:
+            return
+        moved_sq = self._square_of_token(moved_token)
+        if moved_sq < 0:
+            return
+        if old_threats:
+            # Only moving the specifically threatened piece to safety is an
+            # escape response that permits the same chase sequence to continue.
+            for attacker_token, target_token, count, chaser, route in old_threats:
+                if moved_token != target_token or mover == chaser:
+                    continue
+                attacker_sq = self._square_of_token(attacker_token)
+                if attacker_sq >= 0 and not self._can_attack(attacker_sq, moved_sq):
+                    self.pending_chase = (attacker_token, target_token, count, chaser, route + (moved_sq,))
+                    return
+        threatened = self._threatened_tokens(moved_sq)
+        for target_token in threatened:
+            count = 1
+            if old_pending is not None and old_pending[0] == moved_token and old_pending[1] == target_token and old_pending[3] == mover:
+                count = old_pending[2] + 1
+            route = (self._square_of_token(target_token),)
+            if old_pending is not None and old_pending[0] == moved_token and old_pending[1] == target_token and old_pending[3] == mover:
+                route = old_pending[4]
+            self.chase_threats.append((moved_token, target_token, count, mover, route))
 
     def make_move(self, move, flip_piece=None, validate=True):
         move = int(move)
@@ -116,6 +232,8 @@ class DarkChessBoardPy:
             raise ValueError(f"illegal move: {move}")
 
         from_sq, to_sq, is_flip = decode_move(move)
+        mover = int(self.side_to_move)
+        moved_token = int(self.token_at_square[from_sq])
         flipped_piece = None
         if is_flip:
             flipped_piece = (
@@ -157,14 +275,19 @@ class DarkChessBoardPy:
                     if has_bit(self.piece_bitboards[i], to_sq):
                         self.piece_bitboards[i] = clear_bit(self.piece_bitboards[i], to_sq)
                         break
+                self.token_at_square[to_sq] = -1
                         
             self.piece_bitboards[piece] = set_bit(self.piece_bitboards[piece], to_sq)
             self.occupied_bitboard = set_bit(self.occupied_bitboard, to_sq)
+            self.token_at_square[to_sq] = moved_token
+            self.token_at_square[from_sq] = -1
             
             if is_capture:
                 self.half_move_clock = 0
             else:
                 self.half_move_clock += 1
+
+        self._update_chase(mover, moved_token, is_flip, False if is_flip else is_capture)
                 
         if self.side_to_move != NONE:
             self.side_to_move = 1 - self.side_to_move
@@ -198,9 +321,6 @@ class DarkChessBoardPy:
 
         if self.half_move_clock >= 60:
             return True, 0.0
-        if self.repetition_count() >= 3:
-            return True, 0.0
-
         # A face-down square is always a legal flip, so the expensive move
         # generation is only needed once the bag is empty.
         if (

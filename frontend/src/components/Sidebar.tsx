@@ -34,7 +34,7 @@ export function Sidebar({ game, human, thinking, model, modelError, onReset }: {
       <span className="pulse" /><div><small>目前引擎</small><strong>{thinking ? `${engine} · 搜尋中` : engine}</strong></div>
     </div>
     <CapturedPieces game={game} />
-    <ul className="rules"><li>第一顆翻出的顏色就是你的陣營</li><li>炮必須隔一顆棋才能吃子</li><li>小兵能吃將帥，將帥不能吃小兵</li><li>連續 60 步未吃子或三次重複局面判和</li></ul>
+    <ul className="rules"><li>第一顆翻出的顏色就是你的陣營</li><li>炮必須隔一顆棋才能吃子</li><li>小兵能吃將帥，將帥不能吃小兵</li><li>可持續逼近新位置；逃子一旦折返或繞圈，追方下一步不得繼續追，即使換方向也一樣</li><li>連續 60 步未翻牌或吃子判和；盤面重複不直接判和</li></ul>
     <button className="new-game" onClick={onReset}>重新開局 <span>→</span></button>
     <p className="honesty">網頁會顯示實際載入的 NNUE 版本；若模型載入失敗，會明確降級為規則搜尋。</p>
   </aside>

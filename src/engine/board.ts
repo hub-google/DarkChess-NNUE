@@ -16,6 +16,9 @@ export class DarkChessBoard {
     sideToMove: Color;
     halfMoveClock: number; // For 50-move rule
     history: string[]; // For 3-fold repetition
+    tokenAtSquare: number[];
+    chaseThreats: Array<[number, number, number, Color, number[]]>;
+    pendingChase: [number, number, number, Color, number[]] | null;
     
     constructor() {
         this.pieceBitboards = new Array(14).fill(0);
@@ -26,6 +29,9 @@ export class DarkChessBoard {
         this.sideToMove = Color.NONE; // First move determines color
         this.halfMoveClock = 0;
         this.history = [];
+        this.tokenAtSquare = Array.from({ length: 32 }, (_, square) => square);
+        this.chaseThreats = [];
+        this.pendingChase = null;
         this.initRandomBoard();
     }
 
@@ -56,6 +62,9 @@ export class DarkChessBoard {
         board.sideToMove = this.sideToMove;
         board.halfMoveClock = this.halfMoveClock;
         board.history = [...this.history];
+        board.tokenAtSquare = [...this.tokenAtSquare];
+        board.chaseThreats = this.chaseThreats.map(item => [item[0], item[1], item[2], item[3], [...item[4]]]);
+        board.pendingChase = this.pendingChase ? [this.pendingChase[0], this.pendingChase[1], this.pendingChase[2], this.pendingChase[3], [...this.pendingChase[4]]] : null;
         return board;
     }
 
@@ -135,7 +144,85 @@ export class DarkChessBoard {
             }
         }
         
-        return moves;
+        if (!this.pendingChase) return moves;
+        return moves.filter(move => !this.continuesForbiddenChase(move));
+    }
+
+    private pieceAt(square: number): Piece | undefined {
+        for (let piece = 0; piece < 14; piece++) if (hasBit(this.pieceBitboards[piece], square)) return piece;
+        return undefined;
+    }
+
+    private squareOfToken(token: number): number { return this.tokenAtSquare.indexOf(token); }
+
+    private canAttack(attackerSquare: number, targetSquare: number, blockers?: number): boolean {
+        const attacker = this.pieceAt(attackerSquare), victim = this.pieceAt(targetSquare);
+        if (attacker === undefined || victim === undefined || PIECE_COLOR[attacker] === PIECE_COLOR[victim]) return false;
+        if (PIECE_TYPE[attacker] !== PieceType.CANNON) {
+            return hasBit(ADJACENT_MASKS[attackerSquare], targetSquare) && this.canCapture(attacker, victim);
+        }
+        if (Math.floor(attackerSquare / 8) !== Math.floor(targetSquare / 8) && attackerSquare % 8 !== targetSquare % 8) return false;
+        const sameRow = Math.floor(attackerSquare / 8) === Math.floor(targetSquare / 8);
+        const step = sameRow ? (targetSquare > attackerSquare ? 1 : -1) : (targetSquare > attackerSquare ? 8 : -8);
+        const occupied = blockers === undefined ? (this.occupiedBitboard | this.hiddenBitboard) >>> 0 : blockers >>> 0;
+        let screens = 0;
+        for (let at = attackerSquare + step; at !== targetSquare; at += step) if (hasBit(occupied, at)) screens++;
+        return screens === 1;
+    }
+
+    private threatenedTokens(attackerSquare: number): number[] {
+        const targets: number[] = [];
+        for (let square = 0; square < 32; square++) if (this.canAttack(attackerSquare, square)) targets.push(this.tokenAtSquare[square]);
+        return targets;
+    }
+
+    private continuesForbiddenChase(move: MoveId): boolean {
+        if (!this.pendingChase) return false;
+        const [attackerToken, targetToken] = this.pendingChase;
+        const { from, to, isFlip } = decodeMove(move);
+        if (isFlip || this.tokenAtSquare[from] !== attackerToken || hasBit(this.occupiedBitboard, to)) return false;
+        const target = this.squareOfToken(targetToken), attacker = this.pieceAt(from), victim = this.pieceAt(target);
+        if (target < 0 || attacker === undefined || victim === undefined) return false;
+        let continues = false;
+        if (PIECE_TYPE[attacker] !== PieceType.CANNON) {
+            continues = hasBit(ADJACENT_MASKS[to], target) && this.canCapture(attacker, victim);
+        } else {
+            let blockers = (this.occupiedBitboard | this.hiddenBitboard) >>> 0;
+            blockers = clearBit(blockers, from); blockers = setBit(blockers, to);
+            if (Math.floor(to / 8) === Math.floor(target / 8) || to % 8 === target % 8) {
+                const sameRow = Math.floor(to / 8) === Math.floor(target / 8);
+                const step = sameRow ? (target > to ? 1 : -1) : (target > to ? 8 : -8);
+                let screens = 0;
+                for (let at = to + step; at !== target; at += step) if (hasBit(blockers, at)) screens++;
+                continues = screens === 1;
+            }
+        }
+        if (!continues) return false;
+        const route = this.pendingChase[4];
+        return new Set(route).size !== route.length;
+    }
+
+    private updateChase(mover: Color, movedToken: number, isFlip: boolean, isCapture: boolean) {
+        const oldThreats = this.chaseThreats, oldPending = this.pendingChase;
+        this.chaseThreats = []; this.pendingChase = null;
+        if (isFlip || isCapture) return;
+        const movedSquare = this.squareOfToken(movedToken);
+        if (movedSquare < 0) return;
+        for (const record of oldThreats) {
+            const [attackerToken, targetToken, count, chaser, route] = record;
+            if (movedToken !== targetToken || mover === chaser) continue;
+            const attackerSquare = this.squareOfToken(attackerToken);
+            if (attackerSquare >= 0 && !this.canAttack(attackerSquare, movedSquare)) {
+                this.pendingChase = [attackerToken, targetToken, count, chaser, [...route, movedSquare]];
+                return;
+            }
+        }
+        for (const targetToken of this.threatenedTokens(movedSquare)) {
+            const count = oldPending && oldPending[0] === movedToken && oldPending[1] === targetToken && oldPending[3] === mover ? oldPending[2] + 1 : 1;
+            const route = oldPending && oldPending[0] === movedToken && oldPending[1] === targetToken && oldPending[3] === mover
+                ? oldPending[4] : [this.squareOfToken(targetToken)];
+            this.chaseThreats.push([movedToken, targetToken, count, mover, route]);
+        }
     }
 
     private generateCannonJumps(sq: number, row: number, col: number, enemyColor: Color, moves: MoveId[]) {
@@ -177,6 +264,9 @@ export class DarkChessBoard {
         }
 
         const { from, to, isFlip } = decodeMove(move);
+        const mover = this.sideToMove;
+        const movedToken = this.tokenAtSquare[from];
+        let isCapture = false;
         let flippedPiece: Piece | undefined;
         if (isFlip) {
             flippedPiece = flippedPieceOverride ?? this.hiddenPieces[from];
@@ -216,7 +306,6 @@ export class DarkChessBoard {
             this.pieceBitboards[piece] = clearBit(this.pieceBitboards[piece], from);
             this.occupiedBitboard = clearBit(this.occupiedBitboard, from);
             
-            let isCapture = false;
             // Check if target is a capture
             if (hasBit(this.occupiedBitboard, to)) {
                 isCapture = true;
@@ -224,6 +313,7 @@ export class DarkChessBoard {
                 for (let i = 0; i < 14; i++) {
                     if (hasBit(this.pieceBitboards[i], to)) {
                         this.pieceBitboards[i] = clearBit(this.pieceBitboards[i], to);
+                        this.tokenAtSquare[to] = -1;
                         break;
                     }
                 }
@@ -232,6 +322,8 @@ export class DarkChessBoard {
             // Place piece at destination
             this.pieceBitboards[piece] = setBit(this.pieceBitboards[piece], to);
             this.occupiedBitboard = setBit(this.occupiedBitboard, to);
+            this.tokenAtSquare[to] = movedToken;
+            this.tokenAtSquare[from] = -1;
             
             if (isCapture) {
                 this.halfMoveClock = 0;
@@ -239,6 +331,8 @@ export class DarkChessBoard {
                 this.halfMoveClock++;
             }
         }
+
+        this.updateChase(mover, movedToken, isFlip, isFlip ? false : isCapture);
         
         // Switch turn (except if sideToMove is still NONE, which shouldn't happen after first flip)
         if (this.sideToMove !== Color.NONE) {
@@ -263,14 +357,6 @@ export class DarkChessBoard {
 
         if (this.halfMoveClock >= 60) return { over: true, result: 0.0 };
 
-        // Check 3-fold repetition (two previous occurrences + current).
-        let repCount = 1;
-        const currentSnapshot = this.getSnapshot();
-        for (const snap of this.history) {
-            if (snap === currentSnapshot) repCount++;
-        }
-        if (repCount >= 3) return { over: true, result: 0.0 };
-        
         // Check if trapped (no legal moves for current player)
         if (this.sideToMove !== Color.NONE) {
             const moves = this.generateLegalMoves();

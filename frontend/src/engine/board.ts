@@ -7,6 +7,7 @@ export enum Piece {
 }
 
 export type Move = { from: number; to: number; flip?: boolean }
+type ChaseRecord = [attacker: number, target: number, count: number, chaser: Color, route: number[]]
 
 const inventory = [
   Piece.RED_KING, Piece.RED_GUARD, Piece.RED_GUARD,
@@ -38,6 +39,9 @@ export class Board {
   public ply = 0
   public halfMoveClock = 0
   public history: string[] = []
+  public tokenAtSquare = Array.from({ length: 32 }, (_, square) => square)
+  public chaseThreats: ChaseRecord[] = []
+  public pendingChase: ChaseRecord | null = null
 
   constructor(shuffle = true) {
     this.hidden = [...inventory]
@@ -61,6 +65,9 @@ export class Board {
     b.turn = this.turn; b.winner = this.winner; b.draw = this.draw
     b.selected = this.selected; b.ply = this.ply; b.halfMoveClock = this.halfMoveClock
     b.history = [...this.history]
+    b.tokenAtSquare = [...this.tokenAtSquare]
+    b.chaseThreats = this.chaseThreats.map(record => [record[0], record[1], record[2], record[3], [...record[4]]])
+    b.pendingChase = this.pendingChase ? [this.pendingChase[0], this.pendingChase[1], this.pendingChase[2], this.pendingChase[3], [...this.pendingChase[4]]] : null
     return b
   }
 
@@ -93,6 +100,10 @@ export class Board {
   }
 
   canMove(from: number, to: number) {
+    return this.canMoveByBoardRules(from, to) && !this.continuesForbiddenChase(from, to)
+  }
+
+  private canMoveByBoardRules(from: number, to: number) {
     const attacker = this.grid[from], victim = this.grid[to]
     if (attacker === Piece.EMPTY || attacker === Piece.HIDDEN || colorOf(attacker) !== this.turn || colorOf(victim) === this.turn || victim === Piece.HIDDEN) return false
     if (typeOf(attacker) === 5 && victim !== Piece.EMPTY) {
@@ -110,9 +121,71 @@ export class Board {
     return attackerType <= victimType
   }
 
+  private squareOfToken(token: number) { return this.tokenAtSquare.indexOf(token) }
+
+  private canAttack(attackerSquare: number, targetSquare: number, grid = this.grid) {
+    const attacker = grid[attackerSquare], victim = grid[targetSquare]
+    if (colorOf(attacker) === Color.NONE || colorOf(victim) === Color.NONE || colorOf(attacker) === colorOf(victim)) return false
+    if (typeOf(attacker) !== 5) {
+      if (!adjacent(attackerSquare, targetSquare)) return false
+      const attackerType = typeOf(attacker), victimType = typeOf(victim)
+      if (attackerType === 0 && victimType === 6) return false
+      if (attackerType === 6 && victimType === 0) return true
+      return attackerType <= victimType
+    }
+    if (Math.floor(attackerSquare / 8) !== Math.floor(targetSquare / 8) && attackerSquare % 8 !== targetSquare % 8) return false
+    const step = Math.floor(attackerSquare / 8) === Math.floor(targetSquare / 8)
+      ? (targetSquare > attackerSquare ? 1 : -1) : (targetSquare > attackerSquare ? 8 : -8)
+    let screens = 0
+    for (let at = attackerSquare + step; at !== targetSquare; at += step) if (grid[at] !== Piece.EMPTY) screens++
+    return screens === 1
+  }
+
+  private continuesForbiddenChase(from: number, to: number) {
+    if (!this.pendingChase) return false
+    const [attackerToken, targetToken] = this.pendingChase
+    if (this.tokenAtSquare[from] !== attackerToken || this.grid[to] !== Piece.EMPTY) return false
+    const target = this.squareOfToken(targetToken)
+    if (target < 0) return false
+    const next = [...this.grid]
+    next[to] = next[from]; next[from] = Piece.EMPTY
+    if (!this.canAttack(to, target, next)) return false
+    const route = this.pendingChase[4]
+    return new Set(route).size !== route.length
+  }
+
+  private updateChase(mover: Color, movedToken: number, flip: boolean, capture: boolean) {
+    const oldThreats = this.chaseThreats, oldPending = this.pendingChase
+    this.chaseThreats = []; this.pendingChase = null
+    if (flip || capture) return
+    const movedSquare = this.squareOfToken(movedToken)
+    if (movedSquare < 0) return
+    for (const record of oldThreats) {
+      const [attackerToken, targetToken, count, chaser, route] = record
+      if (movedToken !== targetToken || mover === chaser) continue
+      const attackerSquare = this.squareOfToken(attackerToken)
+      if (attackerSquare >= 0 && !this.canAttack(attackerSquare, movedSquare)) {
+        this.pendingChase = [attackerToken, targetToken, count, chaser, [...route, movedSquare]]
+        return
+      }
+    }
+    for (let target = 0; target < 32; target++) {
+      if (!this.canAttack(movedSquare, target)) continue
+      const targetToken = this.tokenAtSquare[target]
+      const count = oldPending && oldPending[0] === movedToken && oldPending[1] === targetToken && oldPending[3] === mover
+        ? oldPending[2] + 1 : 1
+      const route = oldPending && oldPending[0] === movedToken && oldPending[1] === targetToken && oldPending[3] === mover
+        ? oldPending[4] : [this.squareOfToken(targetToken)]
+      this.chaseThreats.push([movedToken, targetToken, count, mover, route])
+    }
+  }
+
   play(move: Move) {
     if (this.isOver) return false
     this.history.push(this.snapshot())
+    const mover = this.turn
+    const movedToken = this.tokenAtSquare[move.from]
+    let wasCapture = false
     if (move.flip) {
       if (this.grid[move.from] !== Piece.HIDDEN) { this.history.pop(); return false }
       const piece = this.hidden[move.from]
@@ -123,11 +196,16 @@ export class Board {
     } else {
       if (!this.canMove(move.from, move.to)) { this.history.pop(); return false }
       const captured = this.grid[move.to]
+      wasCapture = captured !== Piece.EMPTY
+      if (wasCapture) this.tokenAtSquare[move.to] = -1
       this.grid[move.to] = this.grid[move.from]
       this.grid[move.from] = Piece.EMPTY
+      this.tokenAtSquare[move.to] = movedToken
+      this.tokenAtSquare[move.from] = -1
       if (captured !== Piece.EMPTY) { this.captured.push(captured); this.halfMoveClock = 0 }
       else this.halfMoveClock++
     }
+    this.updateChase(mover, movedToken, Boolean(move.flip), wasCapture)
     this.turn = 1 - this.turn
     this.selected = null
     this.ply++
@@ -135,7 +213,7 @@ export class Board {
     const black = this.grid.some(p => colorOf(p) === Color.BLACK) || this.remainingCounts.slice(7).some(Boolean)
     if (!red) this.winner = Color.BLACK
     else if (!black) this.winner = Color.RED
-    else if (this.halfMoveClock >= 60 || this.repetitionCount() >= 3) this.draw = true
+    else if (this.halfMoveClock >= 60) this.draw = true
     else if (this.legalMoves(this.turn).length === 0) this.winner = 1 - this.turn
     return true
   }

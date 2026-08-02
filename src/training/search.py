@@ -82,6 +82,8 @@ class ChanceSearch:
             board.get_snapshot(),
             int(board.half_move_clock),
             tuple(board.history),
+            tuple(board.chase_threats),
+            board.pending_chase,
             depth,
         )
 

@@ -51,6 +51,42 @@ describe('DarkChess Board Engine', () => {
     expect(board.captured).toEqual([Piece.BLK_KNIGHT])
   })
 
+  it('allows a chase that keeps advancing into new positions', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[8] = Piece.RED_GUARD; board.grid[1] = Piece.BLK_ROOK
+
+    expect(board.play({ from: 8, to: 0 })).toBe(true) // first chase
+    expect(board.play({ from: 1, to: 2 })).toBe(true)
+    expect(board.play({ from: 0, to: 1 })).toBe(true) // second chase
+    expect(board.play({ from: 2, to: 3 })).toBe(true)
+
+    expect(board.canMove(1, 2)).toBe(true)
+  })
+
+  it('forbids the chase move that would repeat the same route a third time', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[8] = Piece.RED_GUARD; board.grid[1] = Piece.BLK_ROOK
+    const route = [
+      { from: 8, to: 0 },
+      { from: 1, to: 9 }, { from: 0, to: 1 }, { from: 9, to: 8 }, { from: 1, to: 9 },
+      { from: 8, to: 0 }, { from: 9, to: 8 }, { from: 0, to: 1 },
+    ]
+    for (const move of route) expect(board.play(move)).toBe(true)
+    expect(board.canMove(8, 0)).toBe(false)
+    expect(board.canMove(8, 9)).toBe(false) // changing direction still continues the long chase
+    expect(board.play({ from: 8, to: 0 })).toBe(false)
+  })
+
+  it('does not adjudicate an ordinary threefold repetition as a draw', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[0] = Piece.RED_ROOK; board.grid[31] = Piece.BLK_ROOK
+    for (const move of [
+      { from: 0, to: 1 }, { from: 31, to: 30 }, { from: 1, to: 0 }, { from: 30, to: 31 },
+      { from: 0, to: 1 }, { from: 31, to: 30 }, { from: 1, to: 0 }, { from: 30, to: 31 },
+    ]) expect(board.play(move)).toBe(true)
+    expect(board.draw).toBe(false)
+  })
+
   it('exports the same 498 public features used during training', () => {
     board.grid.fill(Piece.EMPTY); board.grid[0] = Piece.RED_KING; board.grid[1] = Piece.HIDDEN
     board.remainingCounts[0] = 0; board.turn = Color.BLACK; board.halfMoveClock = 30
