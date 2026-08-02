@@ -121,8 +121,11 @@ def archive_repository() -> None:
     output_dir.mkdir(parents=True)
 
     # Authentication is installed into Git's credential store by the workflow.
-    # Blob filtering keeps Xet payloads out until a sparse path is checked out.
-    run_git("clone", "--filter=blob:none", "--no-checkout", "--depth=1", REPO_URL, str(repo_dir))
+    # --no-checkout transfers the Git tree and small Xet pointers, but does not
+    # reconstruct any Xet payload until sparse checkout selects a shard.  Do not
+    # use Git partial-clone filtering here: the Hub's promisor endpoint cannot
+    # reliably serve the missing pointer pack for this very large repository.
+    run_git("clone", "--no-checkout", "--depth=1", REPO_URL, str(repo_dir))
     run_git("sparse-checkout", "init", "--no-cone", cwd=repo_dir)
     source_revision = run_git("rev-parse", "HEAD", cwd=repo_dir)
     source_staging_tree = run_git("rev-parse", f"{source_revision}:staging", cwd=repo_dir)
