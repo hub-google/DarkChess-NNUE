@@ -12,6 +12,7 @@ take longer than a GitHub-hosted runner's six-hour limit.
 import os
 import gzip
 import json
+import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,7 +22,13 @@ from huggingface_hub import HfApi, hf_hub_download, CommitOperationDelete
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 BUFFER_FILE = "replay_buffer.jsonl.gz"
+WATERMARK_FILE = "consolidation_watermark.txt"
 CHUNK_SIZE = 500  # Max delete operations per commit
+
+
+def staging_timestamp(path):
+    match = re.search(r"(?:batch|data)_(\d+)", path)
+    return int(match.group(1)) if match else 0
 
 
 def list_recent_staging_files(api):
@@ -60,12 +67,7 @@ def list_recent_staging_files(api):
         futures = [executor.submit(list_path, path) for path in paths]
         for future in as_completed(futures):
             files.extend(future.result())
-    files = sorted(set(files), reverse=True)
-    max_files = int(os.environ.get("MAX_STAGING_FILES", "2000"))
-    if len(files) > max_files:
-        print(f"   Limiting {len(files)} staging files to the newest {max_files}.")
-        files = files[:max_files]
-    return files
+    return sorted(set(files))
 
 
 def consolidate():
@@ -84,11 +86,30 @@ def consolidate():
             shutil.rmtree(d)
         os.makedirs(d, exist_ok=True)
 
+    # Read the last successfully compacted filename. Old staging files may stay
+    # in the repo, but they are never downloaded twice.
+    watermark = 0
+    try:
+        watermark_path = hf_hub_download(
+            repo_id=REPO_ID, filename=WATERMARK_FILE,
+            repo_type="dataset", token=hf_token, local_dir=temp_dir,
+        )
+        with open(watermark_path, "r", encoding="utf-8") as handle:
+            watermark = int(handle.read().strip())
+    except Exception:
+        pass
+
     # 1. List only staging.  Never call list_repo_files here: the repository
     # has a large legacy root archive which is unrelated to nightly training.
     print("1. Listing staging files in the dataset repo...")
     try:
-        staging_files = list_recent_staging_files(api)
+        all_staging_files = list_recent_staging_files(api)
+        staging_files = all_staging_files
+        if watermark:
+            staging_files = [
+                path for path in staging_files
+                if staging_timestamp(path) > watermark
+            ]
     except Exception as e:
         raise RuntimeError(f"Error listing staging files: {e}") from e
 
@@ -134,7 +155,7 @@ def consolidate():
 
         downloaded = 0
         failed = 0
-        with ThreadPoolExecutor(max_workers=16) as executor:
+        with ThreadPoolExecutor(max_workers=64) as executor:
             futures = [executor.submit(download_staging, sf) for sf in staging_files]
             for i, future in enumerate(as_completed(futures), start=1):
                 sf, records, error = future.result()
@@ -221,12 +242,29 @@ def consolidate():
             else:
                 raise RuntimeError(f"Upload failed after 5 attempts: {e}") from e
 
-    # 7. Delete staging files from HF repo
+    # Advance only after the complete replay buffer is safely committed.
     if successful_staging_files:
-        print(f"7. Cleaning up {len(successful_staging_files)} downloaded staging files from HF...")
+        latest_timestamp = max(staging_timestamp(path) for path in successful_staging_files)
+        api.upload_file(
+            path_or_fileobj=str(latest_timestamp).encode("utf-8"),
+            path_in_repo=WATERMARK_FILE,
+            repo_id=REPO_ID,
+            repo_type="dataset",
+            commit_message="Advance replay-buffer consolidation watermark",
+        )
+        watermark = latest_timestamp
+
+    # 7. Delete staging files from HF repo
+    cleanup_limit = int(os.environ.get("MAX_STAGING_DELETES", "5000"))
+    cleanup_files = [
+        path for path in all_staging_files
+        if watermark and staging_timestamp(path) <= watermark
+    ][:cleanup_limit]
+    if cleanup_files:
+        print(f"7. Cleaning up {len(cleanup_files)} compacted staging files from HF...")
         chunks = [
-            successful_staging_files[i:i + CHUNK_SIZE]
-            for i in range(0, len(successful_staging_files), CHUNK_SIZE)
+            cleanup_files[i:i + CHUNK_SIZE]
+            for i in range(0, len(cleanup_files), CHUNK_SIZE)
         ]
 
         for i, chunk in enumerate(chunks):

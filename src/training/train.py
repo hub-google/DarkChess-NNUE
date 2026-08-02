@@ -226,9 +226,7 @@ def main():
     print("Replay buffer configured. Max capacity: 500,000 games.")
     
     max_positions = int(os.environ.get("MAX_POSITIONS_PER_GAME", "24"))
-    # GitHub-hosted jobs have a hard six-hour ceiling. Keep a nightly run
-    # bounded even when an older workflow still exports an unsafe value.
-    max_samples = min(int(os.environ.get("MAX_TRAINING_SAMPLES", "250000")), 250_000)
+    max_samples = int(os.environ.get("MAX_TRAINING_SAMPLES", "2000000"))
     dataset = DarkChessDataset(
         files,
         input_size=CURRENT_INPUT_SIZE,
@@ -236,7 +234,7 @@ def main():
         max_samples=max_samples,
     )
     batch_size = int(os.environ.get("BATCH_SIZE", "1024"))
-    epochs = min(int(os.environ.get("TRAINING_EPOCHS", "1")), 1)
+    epochs = int(os.environ.get("TRAINING_EPOCHS", "3"))
     dataloader = DataLoader(dataset, batch_size=batch_size)
     
     print(
