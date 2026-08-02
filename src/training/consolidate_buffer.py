@@ -120,6 +120,7 @@ def consolidate():
 
     # 2. Download and read existing replay buffer (if any)
     all_games = []
+    existing_buffer_loaded = False
     successful_staging_files = []
     print("2. Downloading existing replay buffer (if present)...")
     try:
@@ -132,46 +133,86 @@ def consolidate():
                 line_str = line.strip()
                 if line_str:
                     all_games.append(line_str)
+        existing_buffer_loaded = True
         print(f"   Read {len(all_games)} games from existing buffer.")
     except Exception as e:
         # The first successful consolidation legitimately has no buffer yet.
         print(f"   No readable existing buffer; continuing with staging: {e}")
 
-    # 3. Download staging files one by one
+    # 3. Download staging files. On the first bootstrap, walk newest-first and
+    # stop once the 500k-game replay window is full. Older files are outside
+    # the declared sliding window and do not need to be downloaded merely to
+    # discard their contents. Incremental runs download every post-watermark
+    # file, which is expected to be a small set.
     if staging_files:
         print(f"3. Downloading {len(staging_files)} staging files...")
         def download_staging(sf):
+            last_error = None
+            for attempt in range(1, 6):
+                try:
+                    local_path = hf_hub_download(
+                        repo_id=REPO_ID, filename=sf,
+                        repo_type="dataset", token=hf_token, local_dir=temp_dir
+                    )
+                    records = []
+                    with gzip.open(local_path, 'rt', encoding='utf-8') as gz:
+                        for line in gz:
+                            line_str = line.strip()
+                            if line_str:
+                                records.append(line_str)
+                    return sf, records, None
+                except Exception as error:
+                    last_error = error
+                    if attempt < 5:
+                        time.sleep(min(2 ** attempt, 20))
+            return sf, [], last_error
+
+        bootstrap = not existing_buffer_loaded and watermark == 0
+        pending_files = sorted(
+            staging_files,
+            key=staging_timestamp,
+            reverse=bootstrap,
+        )
+        seen_ids = set()
+        for game_str in all_games:
             try:
-                local_path = hf_hub_download(
-                    repo_id=REPO_ID, filename=sf,
-                    repo_type="dataset", token=hf_token, local_dir=temp_dir
-                )
-                records = []
-                with gzip.open(local_path, 'rt', encoding='utf-8') as gz:
-                    for line in gz:
-                        line_str = line.strip()
-                        if line_str:
-                            records.append(line_str)
-                return sf, records, None
-            except Exception as e:
-                return sf, [], e
+                seen_ids.add(json.loads(game_str)["id"])
+            except Exception:
+                pass
 
         downloaded = 0
         failed = 0
-        with ThreadPoolExecutor(max_workers=64) as executor:
-            futures = [executor.submit(download_staging, sf) for sf in staging_files]
-            for i, future in enumerate(as_completed(futures), start=1):
-                sf, records, error = future.result()
-                if error is None:
-                    all_games.extend(records)
-                    downloaded += 1
-                    successful_staging_files.append(sf)
-                else:
-                    failed += 1
-                    if failed <= 5:
-                        print(f"   Warning: skipping {sf}: {error}")
-                if i % 100 == 0:
-                    print(f"   Progress: {i}/{len(staging_files)} files processed, accumulated {len(all_games)} games so far...")
+        download_chunk_size = 1000
+        for chunk_start in range(0, len(pending_files), download_chunk_size):
+            chunk = pending_files[chunk_start:chunk_start + download_chunk_size]
+            with ThreadPoolExecutor(max_workers=64) as executor:
+                futures = [executor.submit(download_staging, sf) for sf in chunk]
+                for future in as_completed(futures):
+                    sf, records, error = future.result()
+                    if error is None:
+                        all_games.extend(records)
+                        downloaded += 1
+                        successful_staging_files.append(sf)
+                        for record in records:
+                            try:
+                                seen_ids.add(json.loads(record)["id"])
+                            except Exception:
+                                pass
+                    else:
+                        failed += 1
+                        if failed <= 5:
+                            print(f"   Warning: skipping {sf}: {error}")
+
+            print(
+                f"   Progress: {downloaded + failed}/{len(pending_files)} files, "
+                f"{len(seen_ids)} unique games collected..."
+            )
+            if bootstrap and len(seen_ids) >= MAX_REPLAY_GAMES:
+                print(
+                    "   Bootstrap replay window is full; older staging files "
+                    "are outside the 500k-game retention window."
+                )
+                break
 
         print(f"   Downloaded {downloaded} files, skipped {failed} files.")
         if failed:
