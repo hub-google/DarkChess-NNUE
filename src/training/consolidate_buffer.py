@@ -302,18 +302,14 @@ def consolidate():
         )
         watermark = latest_timestamp
 
-    # 7. Delete the entire staging tree in one server-side folder operation.
-    # This is safe only after the replay buffer and watermark commits above.
-    # Self-play is paused during the one-time cleanup to prevent a write race.
+    # 7. Historical staging is intentionally retained until a separate full
+    # archive (not merely the 500k training window) has been built and verified.
+    # Never let the scheduled training job destroy the only copy of older games.
     if all_staging_files:
-        print(f"7. Deleting the complete staging tree ({len(all_staging_files)} files)...")
-        api.delete_folder(
-            path_in_repo="staging",
-            repo_id=REPO_ID,
-            repo_type="dataset",
-            commit_message="Remove staging after successful replay compaction",
+        print(
+            f"7. Retaining {len(all_staging_files)} staging files until the "
+            "complete historical archive is verified."
         )
-        print("   Staging tree deleted successfully.")
     else:
         print("7. No staging files to clean up.")
 
