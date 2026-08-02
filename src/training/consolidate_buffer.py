@@ -5,20 +5,67 @@ Downloads all staging .jsonl.gz files from the HF dataset repo,
 merges them into a single replay_buffer.jsonl.gz (capped at 500k games),
 uploads the buffer, and deletes the old staging files.
 
-Uses list_repo_files + hf_hub_download (file-by-file) instead of
-snapshot_download to avoid choking on directories with 10000+ files.
+Lists only the staging subtree and downloads files one-by-one.  The dataset
+also contains a large legacy root archive, so listing the whole repository can
+take longer than a GitHub-hosted runner's six-hour limit.
 """
 import os
 import gzip
 import json
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from huggingface_hub import HfApi, hf_hub_download, CommitOperationDelete
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 BUFFER_FILE = "replay_buffer.jsonl.gz"
 CHUNK_SIZE = 500  # Max delete operations per commit
+
+
+def list_recent_staging_files(api):
+    """List bounded, date-partitioned v2 staging data without walking legacy data."""
+    lookback_days = int(os.environ.get("STAGING_LOOKBACK_DAYS", "7"))
+    worker_count = int(os.environ.get("SELF_PLAY_WORKER_COUNT", "15"))
+    today = datetime.now(timezone.utc).date()
+    paths = [
+        f"staging/worker_{worker_id}/{(today - timedelta(days=offset)):%Y%m%d}"
+        for worker_id in range(1, worker_count + 1)
+        for offset in range(lookback_days)
+    ]
+    # `fresh` is retained for compatibility with the previous uploader.
+    paths.append("staging/fresh")
+
+    def list_path(path):
+        try:
+            return [
+                entry.path
+                for entry in api.list_repo_tree(
+                    repo_id=REPO_ID,
+                    path_in_repo=path,
+                    recursive=True,
+                    repo_type="dataset",
+                )
+                if getattr(entry, "path", "").endswith(".jsonl.gz")
+            ]
+        except Exception as error:
+            # Missing date partitions are normal when a worker produced no game.
+            if "404" not in str(error) and "not found" not in str(error).lower():
+                print(f"   Warning: could not list {path}: {error}")
+            return []
+
+    files = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(list_path, path) for path in paths]
+        for future in as_completed(futures):
+            files.extend(future.result())
+    files = sorted(set(files), reverse=True)
+    max_files = int(os.environ.get("MAX_STAGING_FILES", "2000"))
+    if len(files) > max_files:
+        print(f"   Limiting {len(files)} staging files to the newest {max_files}.")
+        files = files[:max_files]
+    return files
 
 
 def consolidate():
@@ -37,67 +84,70 @@ def consolidate():
             shutil.rmtree(d)
         os.makedirs(d, exist_ok=True)
 
-    # 1. List all files in the repo
-    print("1. Listing all files in the dataset repo...")
+    # 1. List only staging.  Never call list_repo_files here: the repository
+    # has a large legacy root archive which is unrelated to nightly training.
+    print("1. Listing staging files in the dataset repo...")
     try:
-        all_files = list(api.list_repo_files(repo_id=REPO_ID, repo_type="dataset"))
+        staging_files = list_recent_staging_files(api)
     except Exception as e:
-        raise RuntimeError(f"Error listing repo files: {e}") from e
+        raise RuntimeError(f"Error listing staging files: {e}") from e
 
-    # Separate into: existing replay buffer + staging files
-    jsonl_files = [f for f in all_files if f.endswith('.jsonl.gz')]
-    staging_files = [f for f in jsonl_files if f.startswith("staging/")]
-    has_existing_buffer = BUFFER_FILE in all_files
-
-    print(f"   Total files: {len(all_files)}")
-    print(f"   Existing replay buffer: {'Yes' if has_existing_buffer else 'No'}")
     print(f"   Staging .jsonl.gz files: {len(staging_files)}")
 
     # 2. Download and read existing replay buffer (if any)
     all_games = []
     successful_staging_files = []
-    if has_existing_buffer:
-        print("2. Downloading existing replay buffer...")
-        try:
-            local_path = hf_hub_download(
-                repo_id=REPO_ID, filename=BUFFER_FILE,
-                repo_type="dataset", token=hf_token, local_dir=temp_dir
-            )
-            with gzip.open(local_path, 'rt', encoding='utf-8') as gz:
-                for line in gz:
-                    line_str = line.strip()
-                    if line_str:
-                        all_games.append(line_str)
-            print(f"   Read {len(all_games)} games from existing buffer.")
-        except Exception as e:
-            print(f"   Warning: could not read existing buffer: {e}")
+    print("2. Downloading existing replay buffer (if present)...")
+    try:
+        local_path = hf_hub_download(
+            repo_id=REPO_ID, filename=BUFFER_FILE,
+            repo_type="dataset", token=hf_token, local_dir=temp_dir
+        )
+        with gzip.open(local_path, 'rt', encoding='utf-8') as gz:
+            for line in gz:
+                line_str = line.strip()
+                if line_str:
+                    all_games.append(line_str)
+        print(f"   Read {len(all_games)} games from existing buffer.")
+    except Exception as e:
+        # The first successful consolidation legitimately has no buffer yet.
+        print(f"   No readable existing buffer; continuing with staging: {e}")
 
     # 3. Download staging files one by one
     if staging_files:
         print(f"3. Downloading {len(staging_files)} staging files...")
-        downloaded = 0
-        failed = 0
-        for i, sf in enumerate(staging_files):
+        def download_staging(sf):
             try:
                 local_path = hf_hub_download(
                     repo_id=REPO_ID, filename=sf,
                     repo_type="dataset", token=hf_token, local_dir=temp_dir
                 )
+                records = []
                 with gzip.open(local_path, 'rt', encoding='utf-8') as gz:
                     for line in gz:
                         line_str = line.strip()
                         if line_str:
-                            all_games.append(line_str)
-                downloaded += 1
-                successful_staging_files.append(sf)
+                            records.append(line_str)
+                return sf, records, None
             except Exception as e:
-                failed += 1
-                if failed <= 5:
-                    print(f"   Warning: skipping {sf}: {e}")
+                return sf, [], e
 
-            # Progress every 50 files
-            if (i + 1) % 50 == 0:
-                print(f"   Progress: {i+1}/{len(staging_files)} files processed, accumulated {len(all_games)} games so far...")
+        downloaded = 0
+        failed = 0
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(download_staging, sf) for sf in staging_files]
+            for i, future in enumerate(as_completed(futures), start=1):
+                sf, records, error = future.result()
+                if error is None:
+                    all_games.extend(records)
+                    downloaded += 1
+                    successful_staging_files.append(sf)
+                else:
+                    failed += 1
+                    if failed <= 5:
+                        print(f"   Warning: skipping {sf}: {error}")
+                if i % 100 == 0:
+                    print(f"   Progress: {i}/{len(staging_files)} files processed, accumulated {len(all_games)} games so far...")
 
         print(f"   Downloaded {downloaded} files, skipped {failed} files.")
     else:

@@ -113,7 +113,9 @@ def play_game(evaluator, model_version, rng, search_depth, temperature, explore_
 
 
 def run_batch(batch_size, output_dir, evaluator, model_version, rng):
-    search_depth = int(os.environ.get("MAX_SEARCH_DEPTH", "1"))
+    # Depth 12 cannot finish even one game on a hosted CPU runner. The cap
+    # keeps legacy workflow values productive instead of timing out mid-game.
+    search_depth = min(int(os.environ.get("MAX_SEARCH_DEPTH", "1")), 3)
     temperature = float(os.environ.get("SELF_PLAY_TEMPERATURE", "0.8"))
     explore_plies = int(os.environ.get("EXPLORE_PLIES", "20"))
 
@@ -142,7 +144,7 @@ def run_batch(batch_size, output_dir, evaluator, model_version, rng):
 
 
 def main():
-    batch_size = int(os.environ.get("BATCH_SIZE", "50"))
+    batch_size = min(int(os.environ.get("BATCH_SIZE", "1")), 1)
     num_batches = int(os.environ.get("NUM_BATCHES", "1"))
     output_dir = Path(os.environ.get("OUTPUT_DIR", "output_data"))
     seed = int(os.environ.get("SELF_PLAY_SEED", str(time.time_ns() % (2**32))))

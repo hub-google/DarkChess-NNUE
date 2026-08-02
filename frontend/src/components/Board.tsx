@@ -1,73 +1,31 @@
-import React, { useState } from 'react';
-import { Board as EngineBoard, Piece } from '../engine/board';
+import { Board, Color, colorOf, Piece } from '../engine/board'
 
-interface BoardProps {
-  engine: EngineBoard;
-  onMove?: () => void;
+const labels: Record<number, string> = {
+  1:'帥',2:'仕',3:'相',4:'俥',5:'傌',6:'炮',7:'兵',
+  8:'將',9:'士',10:'象',11:'車',12:'馬',13:'包',14:'卒',
 }
 
-const pieceLabels: Record<Piece, string> = {
-  [Piece.EMPTY]: '',
-  [Piece.RED_KING]: '帥',
-  [Piece.RED_GUARD]: '仕',
-  [Piece.RED_MINISTER]: '相',
-  [Piece.RED_ROOK]: '俥',
-  [Piece.RED_KNIGHT]: '傌',
-  [Piece.RED_CANNON]: '炮',
-  [Piece.RED_PAWN]: '兵',
-  [Piece.BLK_KING]: '將',
-  [Piece.BLK_GUARD]: '士',
-  [Piece.BLK_MINISTER]: '象',
-  [Piece.BLK_ROOK]: '車',
-  [Piece.BLK_KNIGHT]: '馬',
-  [Piece.BLK_CANNON]: '包',
-  [Piece.BLK_PAWN]: '卒',
-  [Piece.HIDDEN]: '?',
-};
-
-export const Board: React.FC<BoardProps> = ({ engine, onMove }) => {
-  const [trigger, setTrigger] = useState(0);
-
-  const handleClick = (r: number, c: number) => {
-    try {
-      if (engine.getPiece(r, c) === Piece.HIDDEN) {
-        engine.flipPiece(r, c);
-        setTrigger(trigger + 1);
-        if (onMove) onMove();
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
+export function BoardView({ game, human, thinking, onSquare }: {
+  game: Board; human: Color; thinking: boolean; onSquare: (index: number) => void
+}) {
+  const status = game.winner !== Color.NONE
+    ? `${game.winner === human ? '你贏了' : 'AI 獲勝'}`
+    : human === Color.NONE ? '翻開第一顆棋，決定你的陣營'
+    : thinking ? 'AI 正在思考…' : game.turn === human ? '輪到你走棋' : '等待 AI'
   return (
-    <div className="grid grid-cols-8 gap-2 p-6 bg-slate-800/50 rounded-2xl shadow-2xl backdrop-blur-md border border-slate-700">
-      {engine.grid.map((row, r) =>
-        row.map((piece, c) => {
-          const isHidden = piece === Piece.HIDDEN;
-          const isRed = piece >= Piece.RED_KING && piece <= Piece.RED_PAWN;
-          const isBlack = piece >= Piece.BLK_KING && piece <= Piece.BLK_PAWN;
-
-          return (
-            <div
-              key={`${r}-${c}`}
-              onClick={() => handleClick(r, c)}
-              className={`
-                flex items-center justify-center w-12 h-12 rounded-full cursor-pointer select-none
-                transition-all duration-300 hover:scale-110 shadow-lg border-2
-                ${isHidden ? 'bg-slate-700 border-slate-600 text-transparent hover:bg-slate-600' : ''}
-                ${isRed ? 'bg-slate-800 border-red-500 text-red-500 shadow-red-500/20' : ''}
-                ${isBlack ? 'bg-slate-800 border-emerald-400 text-emerald-400 shadow-emerald-400/20' : ''}
-                ${piece === Piece.EMPTY ? 'opacity-0 cursor-default' : ''}
-              `}
-            >
-              <span className={`text-xl font-bold ${isHidden ? 'hidden' : 'block'}`}>
-                {pieceLabels[piece]}
-              </span>
-            </div>
-          );
-        })
-      )}
-    </div>
-  );
-};
+    <section className="board-card" aria-label="暗棋棋盤">
+      <div className="board-heading"><div><span>對局 #{String(game.ply + 1).padStart(3,'0')}</span><h2>{status}</h2></div><div className="turn-dot" /></div>
+      <div className="board-grid">
+        {game.grid.map((piece, index) => {
+          const hidden = piece === Piece.HIDDEN, empty = piece === Piece.EMPTY
+          const selected = game.selected === index
+          const target = game.selected !== null && game.canMove(game.selected, index)
+          return <button key={index} aria-label={hidden ? `翻開第 ${index + 1} 格` : labels[piece] || '空格'}
+            className={`square ${hidden?'hidden':''} ${empty?'empty':''} ${colorOf(piece)===Color.RED?'red':''} ${colorOf(piece)===Color.BLACK?'black':''} ${selected?'selected':''} ${target?'target':''}`}
+            onClick={() => onSquare(index)}><span>{hidden ? '暗' : labels[piece]}</span></button>
+        })}
+      </div>
+      <div className="board-note"><span>● 你的棋</span><span>點選棋子，再點選目標位置</span></div>
+    </section>
+  )
+}
