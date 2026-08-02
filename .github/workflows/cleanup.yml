@@ -1,29 +1,67 @@
-name: 🧹 清理 Hugging Face 散檔 (One-time Cleanup)
+name: Archive and clear Hugging Face staging
 
 on:
   workflow_dispatch:
 
+concurrency:
+  group: hf-full-archive
+  cancel-in-progress: false
+
 jobs:
-  cleanup:
-    name: 🧹 清理 staging 散檔
+  archive-shard:
+    name: Archive ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 21
+      matrix:
+        shard:
+          - fresh
+          - worker_1
+          - worker_2
+          - worker_3
+          - worker_4
+          - worker_5
+          - worker_6
+          - worker_7
+          - worker_8
+          - worker_9
+          - worker_10
+          - worker_11
+          - worker_12
+          - worker_13
+          - worker_14
+          - worker_15
+          - worker_16
+          - worker_17
+          - worker_18
+          - worker_19
+          - worker_20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install huggingface_hub
+      - name: Merge and archive shard
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          ARCHIVE_SHARD: ${{ matrix.shard }}
+        run: python -u src/workers/archive_hf_shard.py
+
+  finalize:
+    name: Verify archive and clear staging
+    needs: archive-shard
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    
     steps:
-    - name: 📥 檢出程式碼
-      uses: actions/checkout@v4
-      
-    - name: 🐍 設定 Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        
-    - name: 📦 安裝相依套件
-      run: |
-        python -m pip install --upgrade pip
-        pip install huggingface_hub
-        
-    - name: 🧹 清理 HF 上的散檔
-      env:
-        HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      run: python src/workers/cleanup_hf_staging.py
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install huggingface_hub
+      - name: Verify every shard then delete staging
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/workers/finalize_hf_archive.py
