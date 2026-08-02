@@ -38,6 +38,12 @@ describe('DarkChess Board Engine', () => {
     expect(board.canMove(0, 3)).toBe(false)
   })
 
+  it('allows a cannon to move one square left into an empty square', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[28] = Piece.RED_CANNON
+    expect(board.canMove(28, 27)).toBe(true)
+  })
+
   it('records captured pieces outside the board', () => {
     board.grid.fill(Piece.EMPTY); board.turn = Color.RED
     board.grid[0] = Piece.RED_ROOK; board.grid[1] = Piece.BLK_KNIGHT
