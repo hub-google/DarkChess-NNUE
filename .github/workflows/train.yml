@@ -73,9 +73,12 @@ jobs:
         if: env.PASSED == 'true'
         run: |
           mv models/challenger.nnue models/champion.nnue
+          python src/training/export_nnue.py \
+            --input models/champion.nnue \
+            --output-dir frontend/public/models
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/champion.nnue
+          git add models/champion.nnue frontend/public/models/
           if ! git diff --staged --quiet; then
             git commit -m "chore: promote validated NNUE champion"
             git push

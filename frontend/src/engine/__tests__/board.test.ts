@@ -1,36 +1,59 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { Board, Piece, Color } from '../board';
+import { beforeEach, describe, expect, it } from 'vitest'
+import { Board, Color, Piece } from '../board'
+import { extractFeatures } from '../nnue'
 
 describe('DarkChess Board Engine', () => {
-  let board: Board;
+  let board: Board
 
-  beforeEach(() => {
-    board = new Board();
-  });
+  beforeEach(() => { board = new Board(false) })
 
-  it('should initialize with 32 hidden pieces', () => {
-    expect(board.hiddenPieces.length).toBe(32);
-    // 32 pieces should be on the board (hidden state)
-    let count = 0;
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 8; c++) {
-        if (board.getPiece(r, c) === Piece.HIDDEN) {
-          count++;
-        }
-      }
-    }
-    expect(count).toBe(32);
-  });
+  it('initializes with the standard 32-piece inventory', () => {
+    expect(board.hiddenPieces).toHaveLength(32)
+    expect(board.grid.every(piece => piece === Piece.HIDDEN)).toBe(true)
+    expect(board.remainingCounts).toEqual([1, 2, 2, 2, 2, 2, 5, 1, 2, 2, 2, 2, 2, 5])
+  })
 
-  it('should allow flipping a piece', () => {
-    const p = board.flipPiece(0, 0);
-    expect(p).not.toBe(Piece.HIDDEN);
-    expect(p).not.toBe(Piece.EMPTY);
-    expect(board.getPiece(0, 0)).toBe(p);
-  });
+  it('assigns the first revealed color to the player and passes the turn', () => {
+    board.hidden[0] = Piece.RED_KING
+    expect(board.flipPiece(0, 0)).toBe(Piece.RED_KING)
+    expect(board.turn).toBe(Color.BLACK)
+    expect(board.remainingCounts[0]).toBe(0)
+  })
 
-  it('should identify piece color correctly', () => {
-    expect(Board.getColor(Piece.RED_KING)).toBe(Color.RED);
-    expect(Board.getColor(Piece.BLK_KING)).toBe(Color.BLACK);
-  });
-});
+  it('uses the same king/pawn exception as the training engine', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[0] = Piece.RED_KING; board.grid[1] = Piece.BLK_PAWN
+    expect(board.canMove(0, 1)).toBe(false)
+    board.grid[0] = Piece.RED_PAWN; board.grid[1] = Piece.BLK_KING
+    expect(board.canMove(0, 1)).toBe(true)
+  })
+
+  it('requires exactly one screen for a cannon capture', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[0] = Piece.RED_CANNON; board.grid[3] = Piece.BLK_ROOK
+    expect(board.canMove(0, 3)).toBe(false)
+    board.grid[1] = Piece.HIDDEN
+    expect(board.canMove(0, 3)).toBe(true)
+    board.grid[2] = Piece.RED_PAWN
+    expect(board.canMove(0, 3)).toBe(false)
+  })
+
+  it('records captured pieces outside the board', () => {
+    board.grid.fill(Piece.EMPTY); board.turn = Color.RED
+    board.grid[0] = Piece.RED_ROOK; board.grid[1] = Piece.BLK_KNIGHT
+    expect(board.play({ from: 0, to: 1 })).toBe(true)
+    expect(board.captured).toEqual([Piece.BLK_KNIGHT])
+  })
+
+  it('exports the same 498 public features used during training', () => {
+    board.grid.fill(Piece.EMPTY); board.grid[0] = Piece.RED_KING; board.grid[1] = Piece.HIDDEN
+    board.remainingCounts[0] = 0; board.turn = Color.BLACK; board.halfMoveClock = 30
+    const features = extractFeatures(board)
+    expect(features).toHaveLength(498)
+    expect(features[0]).toBe(1)
+    expect(features[29]).toBe(1)
+    expect(features[480]).toBe(0)
+    expect(features[495]).toBe(1)
+    expect(features[496]).toBe(0.5)
+  })
+})
