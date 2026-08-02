@@ -16,13 +16,12 @@ import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from huggingface_hub import HfApi, hf_hub_download, CommitOperationDelete
+from huggingface_hub import HfApi, hf_hub_download
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 BUFFER_FILE = "replay_buffer.jsonl.gz"
 WATERMARK_FILE = "consolidation_watermark.txt"
-CHUNK_SIZE = 500  # Max delete operations per commit
 
 
 def staging_timestamp(path):
@@ -303,46 +302,18 @@ def consolidate():
         )
         watermark = latest_timestamp
 
-    # 7. Delete staging files from HF repo
-    cleanup_limit = int(os.environ.get("MAX_STAGING_DELETES", "5000"))
-    cleanup_files = [
-        path for path in all_staging_files
-        if watermark and staging_timestamp(path) <= watermark
-    ][:cleanup_limit]
-    if cleanup_files:
-        print(f"7. Cleaning up {len(cleanup_files)} compacted staging files from HF...")
-        chunks = [
-            cleanup_files[i:i + CHUNK_SIZE]
-            for i in range(0, len(cleanup_files), CHUNK_SIZE)
-        ]
-
-        for i, chunk in enumerate(chunks):
-            delete_ops = [CommitOperationDelete(path_in_repo=f) for f in chunk]
-            for attempt in range(1, 6):
-                try:
-                    api.create_commit(
-                        repo_id=REPO_ID,
-                        repo_type="dataset",
-                        operations=delete_ops,
-                        commit_message=f"Clean staging files (batch {i+1}/{len(chunks)})"
-                    )
-                    print(f"   Deleted batch {i+1}/{len(chunks)} ({len(chunk)} files)")
-                    break
-                except Exception as e:
-                    if '429' in str(e) or 'rate' in str(e).lower():
-                        wait = 60 * attempt
-                        print(f"   Rate limited batch {i+1}. Waiting {wait}s...")
-                        time.sleep(wait)
-                    elif attempt < 5:
-                        print(f"   Error batch {i+1} (attempt {attempt}/5): {e}")
-                        time.sleep(15 * attempt)
-                    else:
-                        print(f"   FAILED batch {i+1}: {e}")
-
-            if i < len(chunks) - 1:
-                time.sleep(3)
-
-        print("   Staging cleanup complete.")
+    # 7. Delete the entire staging tree in one server-side folder operation.
+    # This is safe only after the replay buffer and watermark commits above.
+    # Self-play is paused during the one-time cleanup to prevent a write race.
+    if all_staging_files:
+        print(f"7. Deleting the complete staging tree ({len(all_staging_files)} files)...")
+        api.delete_folder(
+            path_in_repo="staging",
+            repo_id=REPO_ID,
+            repo_type="dataset",
+            commit_message="Remove staging after successful replay compaction",
+        )
+        print("   Staging tree deleted successfully.")
     else:
         print("7. No staging files to clean up.")
 
