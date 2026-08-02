@@ -16,7 +16,7 @@ import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import CommitOperationDelete, HfApi, hf_hub_download
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
@@ -70,6 +70,82 @@ def list_staging_files(api):
         for future in as_completed(futures):
             files.extend(future.result())
     return sorted(set(files))
+
+
+def validate_buffer(path, expected_count):
+    """Verify that the committed replay buffer is readable and de-duplicated."""
+    game_ids = set()
+    previous_timestamp = None
+    count = 0
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            game = json.loads(line)
+            game_id = game["id"]
+            timestamp = int(game.get("ts", 0))
+            if not isinstance(game_id, str) or not game_id:
+                raise RuntimeError("replay buffer contains a missing game id")
+            if game_id in game_ids:
+                raise RuntimeError(f"replay buffer contains duplicate game id {game_id}")
+            # The file is newest-first so training sees the latest policy first.
+            if previous_timestamp is not None and timestamp > previous_timestamp:
+                raise RuntimeError("replay buffer is not ordered newest-first")
+            game_ids.add(game_id)
+            previous_timestamp = timestamp
+            count += 1
+    if count != expected_count:
+        raise RuntimeError(
+            f"replay buffer verification found {count} games; expected {expected_count}"
+        )
+    if count > MAX_REPLAY_GAMES:
+        raise RuntimeError(f"replay buffer exceeds the {MAX_REPLAY_GAMES}-game cap")
+    return count
+
+
+def path_exists(api, path):
+    try:
+        next(iter(api.list_repo_tree(
+            repo_id=REPO_ID,
+            path_in_repo=path,
+            recursive=False,
+            repo_type="dataset",
+        )))
+        return True
+    except StopIteration:
+        return False
+    except Exception as error:
+        if "404" in str(error) or "not found" in str(error).lower():
+            return False
+        raise
+
+
+def delete_folder_and_verify(api, path, message):
+    """Delete a remote folder, reconciling a timeout with actual Hub state."""
+    if not path_exists(api, path):
+        print(f"   {path}/ is already empty.")
+        return
+    last_error = None
+    for attempt in range(1, 6):
+        try:
+            api.delete_folder(
+                path_in_repo=path,
+                repo_id=REPO_ID,
+                repo_type="dataset",
+                commit_message=message,
+            )
+        except Exception as error:
+            last_error = error
+        # A 5xx can mean the commit succeeded but its HTTP response timed out.
+        for verify_attempt in range(6):
+            if not path_exists(api, path):
+                print(f"   Cleared {path}/ successfully.")
+                return
+            if verify_attempt < 5:
+                time.sleep(10)
+        if attempt < 5:
+            wait = 15 * attempt
+            print(f"   Cleanup attempt {attempt}/5 did not settle; retrying in {wait}s...")
+            time.sleep(wait)
+    raise RuntimeError(f"failed to clear {path}/ after 5 attempts: {last_error}")
 
 
 def consolidate():
@@ -290,7 +366,9 @@ def consolidate():
             else:
                 raise RuntimeError(f"Upload failed after 5 attempts: {e}") from e
 
-    # Advance only after the complete replay buffer is safely committed.
+    # Advance only after the complete replay buffer is safely committed. This
+    # watermark is needed for the one-time migration while historical staging
+    # still exists; once staging is cleared, every file there is new by definition.
     if successful_staging_files:
         latest_timestamp = max(staging_timestamp(path) for path in successful_staging_files)
         api.upload_file(
@@ -302,16 +380,47 @@ def consolidate():
         )
         watermark = latest_timestamp
 
-    # 7. Historical staging is intentionally retained until a separate full
-    # archive (not merely the 500k training window) has been built and verified.
-    # Never let the scheduled training job destroy the only copy of older games.
-    if all_staging_files:
-        print(
-            f"7. Retaining {len(all_staging_files)} staging files until the "
-            "complete historical archive is verified."
+    # 7. Re-download the committed object before deleting any source data. The
+    # workflow shares its concurrency lock with all self-play uploaders, so the
+    # staging tree cannot receive a new batch between this check and deletion.
+    print("7. Verifying committed replay buffer before clearing staging...")
+    verified_path = hf_hub_download(
+        repo_id=REPO_ID,
+        filename=BUFFER_FILE,
+        repo_type="dataset",
+        token=hf_token,
+        local_dir=os.path.join(temp_dir, "verify"),
+        force_download=True,
+    )
+    verified_count = validate_buffer(verified_path, len(all_games))
+    print(f"   Verified {verified_count} unique games in the committed buffer.")
+
+    delete_folder_and_verify(
+        api,
+        "staging",
+        f"Clear staging after committing latest {verified_count} replay games",
+    )
+
+    # Partial archives from the abandoned full-history strategy are redundant:
+    # training consumes only replay_buffer.jsonl.gz.
+    delete_folder_and_verify(
+        api,
+        "archive",
+        "Remove obsolete full-history archives",
+    )
+
+    # The staging queue is now empty, so a watermark can only introduce a
+    # boundary/collision risk on later runs. Remove it after successful cleanup.
+    try:
+        api.create_commit(
+            repo_id=REPO_ID,
+            repo_type="dataset",
+            operations=[CommitOperationDelete(path_in_repo=WATERMARK_FILE)],
+            commit_message="Remove obsolete consolidation watermark",
         )
-    else:
-        print("7. No staging files to clean up.")
+    except Exception as error:
+        if "404" not in str(error) and "not found" not in str(error).lower():
+            print(f"   Warning: could not remove obsolete watermark: {error}")
 
     # 8. Cleanup local temp
     for d in [temp_dir, output_dir]:

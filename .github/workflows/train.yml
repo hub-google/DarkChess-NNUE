@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: train
+  # Self-play uploaders use the same lock. No new staging batch can arrive
+  # between replay-buffer verification and staging deletion.
+  group: hf-staging-writer
   cancel-in-progress: false
 
 jobs:

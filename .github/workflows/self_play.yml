@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Cleanup uses the same lock so staging cannot change while its immutable
-  # source tree is being archived and verified.
+  # Training consolidation uses the same lock so staging cannot change while
+  # the replay buffer is being committed, verified, and the queue is cleared.
   group: hf-staging-writer
   cancel-in-progress: false
 
