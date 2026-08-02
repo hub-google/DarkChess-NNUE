@@ -16,7 +16,6 @@ import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
 from huggingface_hub import HfApi, hf_hub_download, CommitOperationDelete
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
@@ -36,15 +35,14 @@ def staging_timestamp(path):
     return timestamp // 1000 if timestamp >= 100_000_000_000 else timestamp
 
 
-def list_recent_staging_files(api):
-    """List bounded, date-partitioned v2 staging data without walking legacy data."""
-    lookback_days = int(os.environ.get("STAGING_LOOKBACK_DAYS", "7"))
-    worker_count = int(os.environ.get("SELF_PLAY_WORKER_COUNT", "15"))
-    today = datetime.now(timezone.utc).date()
+def list_staging_files(api):
+    """List all worker staging subtrees without walking the legacy repo root."""
+    # Historical workflows used workers 16-20, while the current workflow uses
+    # 1-15. Keep all of them visible until compaction cleanup is complete.
+    worker_count = int(os.environ.get("STAGING_WORKER_COUNT", "20"))
     paths = [
-        f"staging/worker_{worker_id}/{(today - timedelta(days=offset)):%Y%m%d}"
+        f"staging/worker_{worker_id}"
         for worker_id in range(1, worker_count + 1)
-        for offset in range(lookback_days)
     ]
     # `fresh` is retained for compatibility with the previous uploader.
     paths.append("staging/fresh")
@@ -108,7 +106,7 @@ def consolidate():
     # has a large legacy root archive which is unrelated to nightly training.
     print("1. Listing staging files in the dataset repo...")
     try:
-        all_staging_files = list_recent_staging_files(api)
+        all_staging_files = list_staging_files(api)
         staging_files = all_staging_files
         if watermark:
             staging_files = [
