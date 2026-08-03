@@ -1,0 +1,45 @@
+name: Publish training status
+
+on:
+  workflow_run:
+    workflows:
+      - Distributed belief-state self-play
+      - Train and validate NNUE
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-training-status
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Read private dataset and publish safe totals
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install "huggingface_hub>=0.27"
+          python .github/scripts/publish_training_status.py
+
+      - name: Commit changed totals
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/public/training-status.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: refresh public training status"
+            git push
+          fi

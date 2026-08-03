@@ -1,6 +1,7 @@
 import type { BrowserNNUE } from '../engine/nnue'
 import { Board, Color, colorOf, Piece } from '../engine/board'
 import { labels } from './Board'
+import { TrainingStatus } from './TrainingStatus'
 
 const side = (color: Color) => color === Color.RED ? '紅方' : color === Color.BLACK ? '黑方' : '尚未決定'
 
@@ -33,6 +34,7 @@ export function Sidebar({ game, human, thinking, model, modelError, onReset }: {
     <div className="model-card">
       <span className="pulse" /><div><small>目前引擎</small><strong>{thinking ? `${engine} · 搜尋中` : engine}</strong></div>
     </div>
+    <TrainingStatus />
     <CapturedPieces game={game} />
     <ul className="rules"><li>第一顆翻出的顏色就是你的陣營</li><li>炮必須隔一顆棋才能吃子</li><li>小兵能吃將帥，將帥不能吃小兵</li><li>可持續逼近新位置；逃子一旦折返或繞圈，追方下一步不得繼續追，即使換方向也一樣</li><li>連續 60 步未翻牌或吃子判和；盤面重複不直接判和</li></ul>
     <button className="new-game" onClick={onReset}>重新開局 <span>→</span></button>

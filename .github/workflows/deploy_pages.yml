@@ -8,6 +8,8 @@ on:
       - 'frontend/**'
       - 'models/**'
       - '.github/workflows/deploy_pages.yml'
+      - '.github/workflows/publish_training_status.yml'
+      - '.github/scripts/publish_training_status.py'
   # A model promotion is pushed with GITHUB_TOKEN, and such a push does not
   # start another workflow. Deploy explicitly after successful training.
   workflow_run:
