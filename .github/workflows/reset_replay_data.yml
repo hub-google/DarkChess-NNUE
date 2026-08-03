@@ -1,0 +1,73 @@
+name: Reset replay data for a new ruleset
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DELETE-OLD-RULESET-DATA to confirm"
+        required: true
+        type: string
+
+jobs:
+  reset:
+    if: inputs.confirmation == 'DELETE-OLD-RULESET-DATA'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Hugging Face client
+        run: pip install "huggingface_hub>=0.27"
+
+      - name: Delete consolidated buffer and staging data
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+
+          from huggingface_hub import CommitOperationDelete, HfApi
+
+          repo_id = "hub-google/DarkChess-NNUE-Data"
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          paths = []
+          try:
+              api.repo_info(repo_id=repo_id, repo_type="dataset", files_metadata=False)
+          except Exception as exc:
+              raise RuntimeError(f"Cannot access dataset repo: {exc}") from exc
+
+          if api.file_exists(
+              repo_id=repo_id,
+              repo_type="dataset",
+              filename="replay_buffer.jsonl.gz",
+          ):
+              paths.append("replay_buffer.jsonl.gz")
+
+          staging_roots = [f"staging/worker_{i}" for i in range(1, 21)]
+          staging_roots.append("staging/fresh")
+          for path in staging_roots:
+              try:
+                  entries = api.list_repo_tree(
+                      repo_id=repo_id,
+                      repo_type="dataset",
+                      path_in_repo=path,
+                      recursive=True,
+                      expand=False,
+                  )
+                  paths.extend(entry.path for entry in entries if hasattr(entry, "size"))
+              except Exception:
+                  pass
+
+          paths = sorted(set(paths))
+          print(f"Deleting {len(paths)} replay-data files.")
+          for start in range(0, len(paths), 200):
+              batch = paths[start:start + 200]
+              api.create_commit(
+                  repo_id=repo_id,
+                  repo_type="dataset",
+                  operations=[CommitOperationDelete(path_in_repo=p) for p in batch],
+                  commit_message="Reset replay data after draw-rule change",
+              )
+          print("Replay data reset complete.")
+          PY

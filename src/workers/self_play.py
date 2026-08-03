@@ -14,6 +14,7 @@ TRAINING_DIR = PROJECT_ROOT / "src" / "training"
 sys.path.insert(0, str(TRAINING_DIR))
 
 from board import DarkChessBoardPy  # noqa: E402
+from replay_format import CURRENT_REPLAY_VERSION  # noqa: E402
 from search import (  # noqa: E402
     ChanceSearch,
     material_evaluate,
@@ -67,7 +68,7 @@ def play_game(evaluator, model_version, rng, search_depth, temperature, explore_
     record = {
         "id": str(uuid.uuid4()),
         "ts": int(time.time() * 1000),
-        "ver": "v2.0.0-belief-search",
+        "ver": CURRENT_REPLAY_VERSION,
         "model": model_version,
         "hid": [int(piece) for piece in board.hidden_pieces],
         "mov": [],
@@ -104,9 +105,9 @@ def play_game(evaluator, model_version, rng, search_depth, temperature, explore_
         board.make_move(chosen, validate=False)
         record["ply"] += 1
     else:
-        # This guard should be unreachable when repetition and 60-ply rules
-        # work, but it prevents a bad game from blocking a worker forever.
-        record["res"] = 0.0
+        raise RuntimeError(
+            "self-play exceeded 512 plies without reaching a terminal state"
+        )
 
     record["ply"] = len(record["mov"])
     return record
