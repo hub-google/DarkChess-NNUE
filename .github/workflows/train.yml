@@ -2,7 +2,8 @@ name: Train and validate NNUE
 
 on:
   schedule:
-    - cron: "0 0 * * *"
+    # 19:00 UTC is 03:00 the following day in Asia/Taipei (UTC+8).
+    - cron: "0 19 * * *"
   workflow_dispatch:
 
 concurrency:
