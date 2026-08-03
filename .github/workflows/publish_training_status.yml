@@ -1,6 +1,11 @@
 name: Publish training status
 
 on:
+  push:
+    branches: ["master"]
+    paths:
+      - '.github/workflows/publish_training_status.yml'
+      - '.github/scripts/publish_training_status.py'
   workflow_run:
     workflows:
       - Distributed belief-state self-play
