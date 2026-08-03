@@ -14,6 +14,9 @@ concurrency:
 jobs:
   self-play-worker:
     runs-on: ubuntu-latest
+    # Leave five minutes for setup/cleanup after the 5h50 generation window,
+    # instead of being killed at GitHub's six-hour hosted-runner limit.
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       matrix:
@@ -47,18 +50,35 @@ jobs:
           DATE_STR=$(date +%Y%m%d)
           
           START_TIME=$(date +%s)
-          # GitHub Actions timeout is 6 hours (21600 seconds). We stop at 5.5 hours (19800 seconds).
+          # Runs are scheduled six hours apart. Stop generation after 5h50 so
+          # the next run has a nominal ten-minute pause. GitHub may deliver a
+          # scheduled event late, so the real pause can occasionally be longer.
+          GENERATION_BUDGET=21000
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
-            if [ $ELAPSED -gt 19800 ]; then
-              echo "Elapsed time $ELAPSED seconds exceeds 19800. Stopping to avoid job timeout."
+            REMAINING=$((GENERATION_BUDGET - ELAPSED))
+            if [ "$REMAINING" -le 120 ]; then
+              echo "Generation window exhausted after $ELAPSED seconds."
               break
             fi
             
-            echo "Starting new batch. Elapsed time: $ELAPSED seconds."
-            python -u src/workers/self_play.py
+            echo "Starting new batch. Elapsed: ${ELAPSED}s; remaining: ${REMAINING}s."
+            # Keep two minutes for uploading completed games and runner cleanup.
+            set +e
+            timeout --signal=TERM --kill-after=30s "$((REMAINING - 120))s" \
+              python -u src/workers/self_play.py
+            SELF_PLAY_STATUS=$?
+            set -e
             python -u src/workers/upload_batch.py
+
+            if [ "$SELF_PLAY_STATUS" -eq 124 ]; then
+              echo "Batch reached the generation deadline; uploaded completed games."
+              break
+            elif [ "$SELF_PLAY_STATUS" -ne 0 ]; then
+              echo "Self-play failed with exit code $SELF_PLAY_STATUS."
+              exit "$SELF_PLAY_STATUS"
+            fi
           done
 
       - name: Preserve data if upload failed
