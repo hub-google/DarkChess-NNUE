@@ -8,6 +8,11 @@ on:
       - 'frontend/**'
       - 'models/**'
       - '.github/workflows/deploy_pages.yml'
+  # A model promotion is pushed with GITHUB_TOKEN, and such a push does not
+  # start another workflow. Deploy explicitly after successful training.
+  workflow_run:
+    workflows: ["Train and validate NNUE"]
+    types: [completed]
   workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
 
 permissions:
@@ -21,6 +26,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     name: 🏗️ 前端單元測試與 Vite 靜態檔構建 (Build & Test)
     runs-on: ubuntu-latest
     steps:
