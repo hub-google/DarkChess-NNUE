@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Training consolidation uses the same lock so staging cannot change while
-  # the replay buffer is being committed, verified, and the queue is cleared.
-  group: hf-staging-writer
+  # Prevent two self-play matrices from overlapping. Training uses a
+  # cutoff-bounded staging snapshot and may safely run at the same time.
+  group: self-play
   cancel-in-progress: false
 
 jobs:

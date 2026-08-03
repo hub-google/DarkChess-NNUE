@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Self-play uploaders use the same lock. No new staging batch can arrive
-  # between replay-buffer verification and staging deletion.
-  group: hf-staging-writer
+  # Serialize training runs, but do not block self-play uploads. Consolidation
+  # deletes only the cutoff-bounded snapshot that it successfully verifies.
+  group: nnue-training
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +33,23 @@ jobs:
 
       - name: Run Python tests
         run: python -m unittest discover -s test -p "test_*.py" -v
+
+      - name: Determine replay-buffer snapshot cutoff
+        shell: bash
+        run: |
+          NOW_EPOCH=$(date -u +%s)
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Scheduled training represents 19:00 UTC (03:00 Asia/Taipei).
+            CUTOFF_EPOCH=$(date -u -d "$(date -u +%F) 19:00:00" +%s)
+            if [ "$CUTOFF_EPOCH" -gt "$NOW_EPOCH" ]; then
+              CUTOFF_EPOCH=$((CUTOFF_EPOCH - 86400))
+            fi
+          else
+            # A manual run snapshots everything fully uploaded when its job starts.
+            CUTOFF_EPOCH=$NOW_EPOCH
+          fi
+          echo "CONSOLIDATION_CUTOFF_EPOCH=$CUTOFF_EPOCH" >> "$GITHUB_ENV"
+          echo "Snapshot cutoff: $(date -u -d "@$CUTOFF_EPOCH" --iso-8601=seconds)"
 
       - name: Consolidate replay buffer
         env:

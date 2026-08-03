@@ -1,9 +1,9 @@
 """
 Consolidate Replay Buffer
 
-Downloads all staging .jsonl.gz files from the HF dataset repo,
+Downloads a cutoff-bounded snapshot of staging files from the HF dataset repo,
 merges them into a single replay_buffer.jsonl.gz (capped at 500k games),
-uploads the buffer, and deletes the old staging files.
+uploads and verifies the buffer, then deletes only the files in that snapshot.
 
 Lists only the staging subtree and downloads files one-by-one.  The dataset
 also contains a large legacy root archive, so listing the whole repository can
@@ -22,7 +22,7 @@ MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
 MAX_REPLAY_BYTES = int(os.environ.get("MAX_REPLAY_BUFFER_BYTES", str(2 * 1024**3)))
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 BUFFER_FILE = "replay_buffer.jsonl.gz"
-WATERMARK_FILE = "consolidation_watermark.txt"
+DELETE_BATCH_SIZE = 500
 
 
 def staging_timestamp(path):
@@ -31,7 +31,7 @@ def staging_timestamp(path):
         return 0
     timestamp = int(match.group(1))
     # Historical data_* names used milliseconds while the current batch_*
-    # uploader uses seconds. Normalize before comparing with the watermark.
+    # uploader uses seconds. Normalize before comparing with the cutoff.
     return timestamp // 1000 if timestamp >= 100_000_000_000 else timestamp
 
 
@@ -125,51 +125,65 @@ def write_size_bounded_buffer(path, newest_first_games):
     raise RuntimeError("No replay game fits within the compressed-size cap")
 
 
-def path_exists(api, path):
-    try:
-        next(iter(api.list_repo_tree(
-            repo_id=REPO_ID,
-            path_in_repo=path,
-            recursive=False,
-            repo_type="dataset",
-        )))
-        return True
-    except StopIteration:
-        return False
-    except Exception as error:
-        if "404" in str(error) or "not found" in str(error).lower():
-            return False
-        raise
+def select_snapshot_files(paths, cutoff_epoch):
+    """Return only complete batches whose upload timestamp is in the snapshot."""
+    return sorted(
+        path for path in paths
+        if staging_timestamp(path) <= cutoff_epoch
+    )
 
 
-def delete_folder_and_verify(api, path, message):
-    """Delete a remote folder, reconciling a timeout with actual Hub state."""
-    if not path_exists(api, path):
-        print(f"   {path}/ is already empty.")
+def delete_snapshot_files_and_verify(api, snapshot_files):
+    """Delete only committed snapshot files, preserving concurrent uploads."""
+    remaining = set(snapshot_files)
+    if not remaining:
+        print("   Snapshot contains no staging files to delete.")
         return
+
     last_error = None
     for attempt in range(1, 6):
+        # A previous commit may have succeeded even if its HTTP response failed.
+        remaining.intersection_update(list_staging_files(api))
+        if not remaining:
+            print("   Deleted and verified all snapshot staging files.")
+            return
+
+        paths = sorted(remaining)
         try:
-            api.delete_folder(
-                path_in_repo=path,
-                repo_id=REPO_ID,
-                repo_type="dataset",
-                commit_message=message,
-            )
+            for start in range(0, len(paths), DELETE_BATCH_SIZE):
+                chunk = paths[start:start + DELETE_BATCH_SIZE]
+                api.create_commit(
+                    repo_id=REPO_ID,
+                    repo_type="dataset",
+                    operations=[
+                        CommitOperationDelete(path_in_repo=path)
+                        for path in chunk
+                    ],
+                    commit_message=(
+                        f"Delete {len(chunk)} replay-buffer snapshot batches"
+                    ),
+                )
         except Exception as error:
+            # Self-play may commit a different path at the same time. Refresh
+            # repository state and retry only snapshot paths still present.
             last_error = error
-        # A 5xx can mean the commit succeeded but its HTTP response timed out.
-        for verify_attempt in range(6):
-            if not path_exists(api, path):
-                print(f"   Cleared {path}/ successfully.")
-                return
-            if verify_attempt < 5:
-                time.sleep(10)
+
+        remaining.intersection_update(list_staging_files(api))
+        if not remaining:
+            print("   Deleted and verified all snapshot staging files.")
+            return
         if attempt < 5:
             wait = 15 * attempt
-            print(f"   Cleanup attempt {attempt}/5 did not settle; retrying in {wait}s...")
+            print(
+                f"   {len(remaining)} snapshot files remain after cleanup "
+                f"attempt {attempt}/5; retrying in {wait}s..."
+            )
             time.sleep(wait)
-    raise RuntimeError(f"failed to clear {path}/ after 5 attempts: {last_error}")
+
+    raise RuntimeError(
+        f"failed to delete {len(remaining)} snapshot files after 5 attempts: "
+        f"{last_error}"
+    )
 
 
 def consolidate():
@@ -178,6 +192,7 @@ def consolidate():
         raise RuntimeError("HF_TOKEN not set")
 
     api = HfApi(token=hf_token)
+    cutoff_epoch = int(os.environ.get("CONSOLIDATION_CUTOFF_EPOCH", time.time()))
     temp_dir = "temp_consolidate"
     output_dir = "output_buffer"
     output_path = os.path.join(output_dir, BUFFER_FILE)
@@ -188,34 +203,19 @@ def consolidate():
             shutil.rmtree(d)
         os.makedirs(d, exist_ok=True)
 
-    # Read the last successfully compacted filename. Old staging files may stay
-    # in the repo, but they are never downloaded twice.
-    watermark = 0
-    try:
-        watermark_path = hf_hub_download(
-            repo_id=REPO_ID, filename=WATERMARK_FILE,
-            repo_type="dataset", token=hf_token, local_dir=temp_dir,
-        )
-        with open(watermark_path, "r", encoding="utf-8") as handle:
-            watermark = int(handle.read().strip())
-    except Exception:
-        pass
-
-    # 1. List only staging.  Never call list_repo_files here: the repository
+    # 1. List only staging. Never call list_repo_files here: the repository
     # has a large legacy root archive which is unrelated to nightly training.
     print("1. Listing staging files in the dataset repo...")
     try:
         all_staging_files = list_staging_files(api)
-        staging_files = all_staging_files
-        if watermark:
-            staging_files = [
-                path for path in staging_files
-                if staging_timestamp(path) > watermark
-            ]
+        staging_files = select_snapshot_files(all_staging_files, cutoff_epoch)
     except Exception as e:
         raise RuntimeError(f"Error listing staging files: {e}") from e
 
-    print(f"   Staging .jsonl.gz files: {len(staging_files)}")
+    deferred_count = len(all_staging_files) - len(staging_files)
+    print(f"   Snapshot cutoff epoch: {cutoff_epoch}")
+    print(f"   Snapshot staging files: {len(staging_files)}")
+    print(f"   Files newer than cutoff left for next training: {deferred_count}")
 
     # 2. Download and read existing replay buffer (if any)
     all_games = []
@@ -241,8 +241,8 @@ def consolidate():
     # 3. Download staging files. On the first bootstrap, walk newest-first and
     # stop once the 500k-game replay window is full. Older files are outside
     # the declared sliding window and do not need to be downloaded merely to
-    # discard their contents. Incremental runs download every post-watermark
-    # file, which is expected to be a small set.
+    # discard their contents. Incremental runs download every file in the
+    # cutoff snapshot, which is expected to be a small set.
     if staging_files:
         print(f"3. Downloading {len(staging_files)} staging files...")
         def download_staging(sf):
@@ -266,7 +266,7 @@ def consolidate():
                         time.sleep(min(2 ** attempt, 20))
             return sf, [], last_error
 
-        bootstrap = not existing_buffer_loaded and watermark == 0
+        bootstrap = not existing_buffer_loaded
         pending_files = sorted(
             staging_files,
             key=staging_timestamp,
@@ -317,7 +317,7 @@ def consolidate():
         if failed:
             raise RuntimeError(
                 f"Failed to download {failed} of {len(staging_files)} staging files; "
-                "refusing to update replay buffer or watermark."
+                "refusing to update the replay buffer or delete staging data."
             )
     else:
         print("3. No staging files to process.")
@@ -388,24 +388,10 @@ def consolidate():
             else:
                 raise RuntimeError(f"Upload failed after 5 attempts: {e}") from e
 
-    # Advance only after the complete replay buffer is safely committed. This
-    # watermark is needed for the one-time migration while historical staging
-    # still exists; once staging is cleared, every file there is new by definition.
-    if successful_staging_files:
-        latest_timestamp = max(staging_timestamp(path) for path in successful_staging_files)
-        api.upload_file(
-            path_or_fileobj=str(latest_timestamp).encode("utf-8"),
-            path_in_repo=WATERMARK_FILE,
-            repo_id=REPO_ID,
-            repo_type="dataset",
-            commit_message="Advance replay-buffer consolidation watermark",
-        )
-        watermark = latest_timestamp
-
-    # 7. Re-download the committed object before deleting any source data. The
-    # workflow shares its concurrency lock with all self-play uploaders, so the
-    # staging tree cannot receive a new batch between this check and deletion.
-    print("7. Verifying committed replay buffer before clearing staging...")
+    # 7. Re-download the committed object before deleting any source data.
+    # Self-play may add newer files concurrently; cleanup is restricted to the
+    # immutable paths that this run successfully downloaded and consolidated.
+    print("7. Verifying committed replay buffer before clearing snapshot files...")
     verified_path = hf_hub_download(
         repo_id=REPO_ID,
         filename=BUFFER_FILE,
@@ -417,32 +403,7 @@ def consolidate():
     verified_count = validate_buffer(verified_path, len(all_games))
     print(f"   Verified {verified_count} unique games in the committed buffer.")
 
-    delete_folder_and_verify(
-        api,
-        "staging",
-        f"Clear staging after committing latest {verified_count} replay games",
-    )
-
-    # Partial archives from the abandoned full-history strategy are redundant:
-    # training consumes only replay_buffer.jsonl.gz.
-    delete_folder_and_verify(
-        api,
-        "archive",
-        "Remove obsolete full-history archives",
-    )
-
-    # The staging queue is now empty, so a watermark can only introduce a
-    # boundary/collision risk on later runs. Remove it after successful cleanup.
-    try:
-        api.create_commit(
-            repo_id=REPO_ID,
-            repo_type="dataset",
-            operations=[CommitOperationDelete(path_in_repo=WATERMARK_FILE)],
-            commit_message="Remove obsolete consolidation watermark",
-        )
-    except Exception as error:
-        if "404" not in str(error) and "not found" not in str(error).lower():
-            print(f"   Warning: could not remove obsolete watermark: {error}")
+    delete_snapshot_files_and_verify(api, successful_staging_files)
 
     # 8. Cleanup local temp
     for d in [temp_dir, output_dir]:

@@ -8,8 +8,8 @@
 
 | Workflow 檔名 | 工作流名稱 | 觸發時機 | 主要任務與目標 |
 | :--- | :--- | :--- | :--- |
-| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 4 台 Worker 以公開資訊機率搜尋進行對弈，產生對局上傳至 Hugging Face 暫存區 |
-| **`train.yml`** | 🤖 NNUE 自主訓練與評測流程 | 每日 UTC 00:00（或手動） | 清理並融合 Hugging Face 數據 ➔ 訓練挑戰者模型 ➔ SPRT 對決 ➔ 晉升並 Push |
+| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 15 台 Worker 以公開資訊機率搜尋進行對弈，產生對局上傳至 Hugging Face 暫存區 |
+| **`train.yml`** | 🤖 NNUE 自主訓練與評測流程 | 每日台灣時間 03:00（或手動） | 建立 cutoff 快照並融合 Hugging Face 數據 ➔ 訓練挑戰者模型 ➔ SPRT 對決 ➔ 晉升並 Push |
 | **`deploy_pages.yml`** | 🌐 部署暗棋網頁端至 GitHub Pages | 收到新 `models/champion.nnue` 時 | 自動編譯 TypeScript / WASM / Vite 並更新線上 GitHub Pages 網站 |
 | **`cleanup.yml`** | 🧹 清理 Hugging Face 散檔 | 手動觸發 (`workflow_dispatch`) | 一次性或手動清理 HF `staging` 目錄下過多的對局散檔，避免超出儲存限制 |
 
@@ -27,25 +27,27 @@
 sequenceDiagram
     autonumber
     participant W as Worker (1~15)
-    participant TS as src/workers/self_play.ts
+    participant Py as src/workers/self_play.py
+    participant Upload as src/workers/upload_batch.py
     participant HF as Hugging Face Datasets
     
-    W->>TS: 執行 Python self_play.py
-    TS-->>W: 以 champion 或 bootstrap evaluator 產生 output_data/*.jsonl.gz
-    W->>HF: 執行 HfApi().upload_folder() 上傳至 staging/worker_${WORKER_ID}
+    W->>Py: 執行 Python self_play.py
+    Py-->>W: 以 champion 或 bootstrap evaluator 產生 output_data/*.jsonl.gz
+    W->>Upload: 合併本地完整批次
+    Upload->>HF: HfApi().upload_file() 上傳至 staging/worker_${WORKER_ID}
     W-->>W: 清空 output_data/ 避免磁爆
 ```
 
 1. **環境建置 (Steps 1~5)**：
    * 檢出專案碼、設定 Node.js 22 及 Python 3.10、執行 `npm install` 與 `pip install -r requirements.txt`。
 2. **對弈與上傳無窮迴圈 (Step 6)**：
-   * **環境變數**：`WORKER_ID=${matrix.worker_id}`, `HF_TOKEN`, `MAX_DURATION=19800` (最長執行 5.5 小時防止超時)。
-   * **執行腳本 1**：[`src/workers/self_play.ts`](file:///src/workers/self_play.ts)
-     * **指令**：`env NUM_BATCHES=200 npx tsx src/workers/self_play.ts`
+   * **環境變數**：`WORKER_ID=${matrix.worker_id}`, `HF_TOKEN`, `BATCH_SIZE=10`, `NUM_BATCHES=1`；workflow generation budget 為 `21000` 秒（5 小時 50 分）。
+   * **執行腳本 1**：`src/workers/self_play.py`
+     * **指令**：`python -u src/workers/self_play.py`
    * **功能**：讀取現有 `models/champion.nnue`（若存在），以不讀取真實底牌的 chance-node 搜尋進行對戰；無 champion 時才使用公開資訊 material evaluator。
      * **輸出路徑**：本地 `output_data/selfplay_worker_${WORKER_ID}_${timestamp}.jsonl.gz`
-   * **執行腳本 2 (Python 行內合併與上傳碼)**：
-     * **指令**：`python -c "import os, glob, gzip... HfApi().upload_folder(...)"`
+   * **執行腳本 2（合併與上傳）**：
+     * **指令**：`python -u src/workers/upload_batch.py`
      * **功能**：先將本地 `output_data/` 下的所有散檔合併為單一 `batch_${timestamp}.jsonl.gz` 壓縮檔，再傳送至 Hugging Face Datasets Repo [`hub-google/DarkChess-NNUE-Data`](https://huggingface.co/datasets/hub-google/DarkChess-NNUE-Data)。
      * **HF 寫入目標**：`staging/worker_${WORKER_ID}/`
      * **收尾**：刪除本地暫存檔。每個 Worker 每輪僅產生 1 個檔案，完全避免突破 10,000 個檔案上限與 API 限流。
@@ -55,7 +57,7 @@ sequenceDiagram
 ## 2️⃣ 工作流二：`train.yml` (訓練、融合與評測)
 
 * **檔名路徑**：[`.github/workflows/train.yml`](file:///.github/workflows/train.yml)
-* **觸發條件**：Cron 定時執行 `0 0 * * *`（每天 UTC 00:00 / 台灣時間 08:00）或 `workflow_dispatch`（手動觸發）。
+* **觸發條件**：Cron 定時執行 `0 19 * * *`（每天 UTC 19:00 / 次日台灣時間 03:00）或 `workflow_dispatch`（手動觸發）。排程 run 永遠以該次 03:00 邊界為 cutoff，不因 GitHub 延遲送達而擴大資料範圍；手動 run 則以 job 實際開始時為 cutoff。
 
 ### 📍 步驟與執行腳本明細：
 
@@ -72,10 +74,12 @@ sequenceDiagram
     participant PySPRT as src/training/sprt_validation.py
     participant Git as GitHub Repo (master)
 
-    Runner->>HF: 下載 staging/ 散檔與舊 buffer
+    Runner->>HF: 列出 staging 並固定 cutoff 快照
+    Runner->>HF: 下載快照檔案與舊 buffer
     Runner->>PyConsolidate: 執行 consolidate_buffer.py
-    PyConsolidate->>HF: 刪除 staging/ 下數萬個散檔 (解決1萬筆檔案限制)
     PyConsolidate->>HF: 上傳單一 replay_buffer.jsonl.gz (上限50萬局)
+    PyConsolidate->>HF: 驗證後僅刪除本次快照檔案
+    Note over HF: cutoff 後的 self-play 檔案保留至下次訓練
     Runner->>HF: 下載 datasets/replay_buffer.jsonl.gz
     Runner->>PyTrain: 執行 train.py
     PyTrain-->>Runner: 產出 models/challenger.nnue
@@ -88,8 +92,7 @@ sequenceDiagram
 | 順序 | 步驟名稱 | 執行指令 / 涉及腳本 | 輸入路徑 / 來源 | 輸出路徑 / 標的 | 目的與細節 |
 | :---: | :--- | :--- | :--- | :--- | :--- |
 | **1~5** | 環境建置 | `checkout`, `setup-python`, `setup-node` | 專案程式碼 | Python 3.10 & Node.js 22 | 準備 CI 執行環境 |
-| **6** | 產生最新批次資料 | `npx tsx src/workers/self_play.ts` | 現有模型 | `output_data/` ➔ HF `staging/fresh` | 產生並合併為單檔上傳，補充訓練前最新 1000 局對弈資料 |
-| **7** | **融合並清空 HF 暫存區** | `python src/training/consolidate_buffer.py` | HF `staging/*` 所有散檔 | HF 根目錄 `replay_buffer.jsonl.gz` | **解法核心**：讀入所有對局，滑動窗口保留最新 50 萬局，打包成 1 個壓縮檔，並分批**刪除 HF 上所有的 `staging/*` 散檔** |
+| **6** | **融合 cutoff 快照並精確清理** | `python src/training/consolidate_buffer.py` | HF `staging/*` 中時間戳記 `<= cutoff` 的完整批次 | HF 根目錄 `replay_buffer.jsonl.gz` | 滑動窗口保留最新 50 萬局；重新下載驗證成功後，只刪除本次成功合併的確切檔案。較新或並行上傳的檔案留待下次訓練 |
 | **8** | 下載完整訓練集 | Python `hf_hub_download()` | HF `hub-google/DarkChess-NNUE-Data` | 本地 `datasets/replay_buffer.jsonl.gz` | 精確下載單一整合大檔至本地，防範 429 Too Many Requests 限流 |
 | **9** | **NNUE 模型訓練** | `python src/training/train.py` | `datasets/replay_buffer.jsonl.gz` + 現有 champion | `models/challenger.nnue` | 從 champion 續訓；目前預設 batch 1024、3 epochs，並混合最終勝負與自我對弈 root value |
 | **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true/false`) | 使用相同底盤與相同首翻格的雙局配對，正確維持先後手模型身分並進行序貫檢定；未達 H1 一律不晉升 |
@@ -130,11 +133,11 @@ sequenceDiagram
 為充分利用 GitHub Actions 的免費額度並確保流程不中斷，系統對各工作流的執行時間進行了明確分配與限制：
 
 1. **`self_play.yml` (每 6 小時執行)**：
-   * **最大時長限制 (MAX_DURATION)**：腳本層級設定了 `19800` 秒（**5.5 小時**）的強制中止條件。
-   * **策略目的**：GitHub Actions 對單一 Job 有 6 小時的強制超時限制。設定為 5.5 小時，確保 Worker 能在 6 小時內優雅地停止對弈、寫入最後一批資料，並成功上傳至 Hugging Face，避免因超時被 GitHub 強制砍掉而遺失資料。同時確保在前一輪結束後，下一輪的 `0 */6 * * *` 排程能順利接手。
-2. **`train.yml` (每日 UTC 00:00 執行)**：
+   * **最大時長限制**：generation budget 設定為 `21000` 秒（**5 小時 50 分**），job timeout 為 355 分鐘。
+   * **策略目的**：在 GitHub Actions 單一 Job 六小時限制前停止新批次，保留兩分鐘上傳已完成棋局，並在每六小時週期間留下名義上的十分鐘窗口。
+2. **`train.yml` (每日台灣時間 03:00 執行)**：
    * **執行時間**：依據資料量與 SPRT 對決的收斂速度，約需 1~3 小時不等。
-   * **併發特性**：與 UTC 00:00 的 `self_play.yml` 同時觸發。由於兩者是獨立工作流，GitHub 會配置不同的 Runner 平行處理。`train.yml` 開始時，前一天產生的所有散檔會被下載並融合，而最新一輪的 `self_play` 則繼續產生新的散檔，兩者互不干擾。
+   * **併發特性**：使用 `nnue-training` concurrency group 只防止兩個 train 互相重疊；self-play 使用獨立的 `self-play` group。兩者可平行執行，train 僅處理固定 cutoff 快照並逐檔清理，不會刪除同時產生的新批次。
 3. **`deploy_pages.yml` (事件驅動)**：
    * **執行時間**：幾分鐘內完成。
    * **策略目的**：依賴於 `train.yml` 的成功執行與模型升級，確保只有經過 SPRT 驗證為更強的模型，才會觸發編譯與發布，不占用排程時間。
@@ -153,18 +156,18 @@ sequenceDiagram
       ▼
 [Hugging Face Datasets: staging/*]
       │
-      │ consolidate_buffer.py 觸發
-      ├─► (1) 下載所有散檔並讀取
+      │ consolidate_buffer.py 以 03:00 cutoff 建立快照
+      ├─► (1) 只下載 cutoff 前的完整批次
       ├─► (2) 記憶體內只保留最新 50 萬局
-      ├─► (3) 刪除 Hugging Face 上的所有 staging/* 散檔 (清空備份)
-      └─► (4) 上傳單一 replay_buffer.jsonl.gz 覆蓋根目錄
+      ├─► (3) 上傳並重新下載驗證 replay_buffer.jsonl.gz
+      └─► (4) 只刪除已成功納入的快照檔案；較新檔案保留
       │
       ▼
 [train.py (train.yml)]
       │
       │ 訓練產出 models/challenger.nnue
       ▼
-[sprt_validation.py (1000局鏡像對戰)]
+[sprt_validation.py (最多 200 組雙局配對)]
       │
       ├─► 敗：捨棄 challenger.nnue，結束本次流程
       └─► 勝：覆蓋升格為 models/champion.nnue ➔ git push 至 GitHub master
