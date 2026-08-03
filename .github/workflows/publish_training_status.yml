@@ -9,7 +9,7 @@ on:
   workflow_run:
     workflows:
       - Distributed belief-state self-play
-      - Train and validate NNUE
+      - Train and promote NNUE
     types: [completed]
   workflow_dispatch:
 

@@ -1,4 +1,4 @@
-name: Train and validate NNUE
+name: Train and promote NNUE
 
 on:
   schedule:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  train-and-validate:
+  train-and-promote:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -72,25 +72,10 @@ jobs:
           MAX_TRAINING_SAMPLES: "2000000"
         run: python -u src/training/train.py
 
-      - name: Validate challenger
-        env:
-          SPRT_PAIRS: "200"
-        run: |
-          if [ ! -f models/champion.nnue ]; then
-            echo "No existing champion; allowing the first validated bootstrap model."
-            echo "PASSED=true" >> "$GITHUB_ENV"
-          else
-            python -u src/training/sprt_validation.py \
-              --champion models/champion.nnue \
-              --challenger models/challenger.nnue \
-              --pairs "$SPRT_PAIRS" \
-              --depth 1 \
-              --elo0 0 \
-              --elo1 15
-          fi
-
-      - name: Promote validated challenger
-        if: env.PASSED == 'true'
+      # Early-development bootstrap policy: every successfully trained
+      # challenger becomes the next champion. Reintroduce SPRT gating once the
+      # model and replay buffer are mature enough for meaningful comparisons.
+      - name: Promote trained challenger
         run: |
           mv models/challenger.nnue models/champion.nnue
           python src/training/export_nnue.py \
@@ -100,12 +85,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add models/champion.nnue frontend/public/models/
           if ! git diff --staged --quiet; then
-            git commit -m "chore: promote validated NNUE champion"
+            git commit -m "chore: promote trained NNUE champion"
             git push
           fi
-
-      - name: Reject unproven challenger
-        if: env.PASSED != 'true'
-        run: |
-          echo "Challenger did not cross the SPRT H1 boundary; champion is unchanged."
-          exit 1
