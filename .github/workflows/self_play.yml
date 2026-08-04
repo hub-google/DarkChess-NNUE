@@ -41,7 +41,6 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           BATCH_SIZE: "10"
           NUM_BATCHES: "1"
-          MAX_SEARCH_DEPTH: "12"
           SELF_PLAY_TEMPERATURE: "0.8"
           EXPLORE_PLIES: "20"
         run: |
