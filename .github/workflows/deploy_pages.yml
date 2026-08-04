@@ -1,20 +1,21 @@
 name: 🌐 部署暗棋網頁端至 GitHub Pages (Deploy Frontend)
 
 # 觸發條件：master 分支上有 frontend/、models/ 或此 workflow 檔案變更時觸發
+# Automatic workflows paused per user request
 on:
-  push:
-    branches: ["master"]
-    paths:
-      - 'frontend/**'
-      - 'models/**'
-      - '.github/workflows/deploy_pages.yml'
-      - '.github/workflows/publish_training_status.yml'
-      - '.github/scripts/publish_training_status.py'
-  # A model promotion is pushed with GITHUB_TOKEN, and such a push does not
-  # start another workflow. Deploy explicitly after successful training.
-  workflow_run:
-    workflows: ["Train and promote NNUE", "Publish training status"]
-    types: [completed]
+  # push:
+  #   branches: ["master"]
+  #   paths:
+  #     - 'frontend/**'
+  #     - 'models/**'
+  #     - '.github/workflows/deploy_pages.yml'
+  #     - '.github/workflows/publish_training_status.yml'
+  #     - '.github/scripts/publish_training_status.py'
+  # # A model promotion is pushed with GITHUB_TOKEN, and such a push does not
+  # # start another workflow. Deploy explicitly after successful training.
+  # workflow_run:
+  #   workflows: ["Train and promote NNUE", "Publish training status"]
+  #   types: [completed]
   workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
 
 permissions:

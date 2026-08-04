@@ -1,9 +1,10 @@
 name: 🤖 NNUE 神經網路自主訓練與評測流程 (Autonomous Training Pipeline)
 
 # 觸發條件：每天午夜定時執行，或手動點擊觸發
+# Automatic workflows paused per user request
 on:
-  schedule:
-    - cron: '0 0 * * *' # 每天 UTC 00:00 (台灣時間 08:00) 自動執行
+  # schedule:
+  #   - cron: '0 0 * * *' # 每天 UTC 00:00 (台灣時間 08:00) 自動執行
   workflow_dispatch: # 支援在 GitHub Actions 介面手動觸發
 
 concurrency:
