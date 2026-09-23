@@ -65,7 +65,9 @@ jobs:
           TRAINING_EPOCHS: "1"
           LEARNING_RATE: "0.0001"
           MAX_POSITIONS_PER_GAME: "4"
-          MAX_TRAINING_SAMPLES: "16"
+          # train.py deliberately requires capacity for the full 500k-game
+          # replay window. The cache still contains only the four smoke rows.
+          MAX_TRAINING_SAMPLES: "2000000"
         run: python -u src/training/train.py
 
       - name: Run a minimal paired validation

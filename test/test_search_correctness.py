@@ -25,15 +25,21 @@ def make_two_hidden_board(last_two):
 class SearchCorrectnessTests(unittest.TestCase):
     def test_star1_root_matches_exact_expectiminimax(self):
         board = make_two_hidden_board((0, 7))
-        star = ChanceSearch(
+        star_search = ChanceSearch(
             evaluator=material_evaluate,
-            max_depth=2,
-        ).analyze(board)
+            max_depth=3,
+        )
+        star = star_search.analyze(board)
         exact = ExactChanceSearch(
             evaluator=material_evaluate,
-            max_depth=2,
+            max_depth=3,
         ).analyze(board)
 
+        self.assertGreater(
+            star_search.chance_cutoffs,
+            0,
+            "test position must exercise at least one Star1 chance cutoff",
+        )
         self.assertEqual(star.move, exact.move)
         self.assertAlmostEqual(star.value, exact.value, places=10)
 

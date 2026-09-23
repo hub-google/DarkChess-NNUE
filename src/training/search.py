@@ -134,6 +134,7 @@ class ChanceSearch:
         self.node_budget = None if node_budget is None else max(1, int(node_budget))
         self.nodes = 0
         self.cache = {}
+        self.chance_cutoffs = 0
 
     def _cache_key(self, board):
         return (
@@ -255,8 +256,10 @@ class ChanceSearch:
             lower = expected - remaining
             upper = expected + remaining
             if upper <= alpha:
+                self.chance_cutoffs += 1
                 return float(np.clip(upper, -1.0, 1.0))
             if lower >= beta:
+                self.chance_cutoffs += 1
                 return float(np.clip(lower, -1.0, 1.0))
 
         return float(np.clip(expected, -1.0, 1.0))
@@ -356,6 +359,7 @@ class ChanceSearch:
             raise ValueError("the first flip must be selected before search")
 
         self.nodes = 0
+        self.chance_cutoffs = 0
         self.cache.clear()
         if self.node_budget is None:
             return self._analyze_fixed(board, self.max_depth)
@@ -383,6 +387,7 @@ class ChanceSearch:
         if board.side_to_move != NONE:
             raise ValueError("analyze_first_flip requires the initial position")
         self.nodes = 0
+        self.chance_cutoffs = 0
         self.cache.clear()
         moves = _ordered_moves(board, board.generate_legal_moves())
         groups = _opening_symmetry_groups(moves)
