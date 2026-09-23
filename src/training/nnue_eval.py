@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import torch
 
@@ -77,6 +79,19 @@ class ModelEvaluator:
         self.model.eval()
         self.input_size = int(model.input_size)
         self._token = object()
+        # Incremental first-layer updates are most valuable while chance
+        # information is still present. On fully revealed positions, PyTorch's
+        # batched full forward is faster than many tiny vector updates.
+        self.incremental_min_hidden = max(
+            0,
+            int(os.environ.get("NNUE_INCREMENTAL_MIN_HIDDEN", "1")),
+        )
+
+    def _use_incremental(self, board):
+        return (
+            int(board.hidden_bitboard).bit_count()
+            >= self.incremental_min_hidden
+        )
 
     def _cache(self, board):
         cache = getattr(board, "_nnue_accumulators", None)
@@ -100,6 +115,8 @@ class ModelEvaluator:
         return accumulator
 
     def prepare_child(self, parent, child, move, flip_piece=None):
+        if not self._use_incremental(child):
+            return None
         parent_acc = self.accumulator(parent)
         child_acc = parent_acc.clone()
         with torch.no_grad():
@@ -123,7 +140,15 @@ class ModelEvaluator:
             x = torch.clamp(torch.relu(self.model.fc2(x)), max=1.0)
             return torch.tanh(self.model.fc3(x))
 
+    def _full_value(self, board):
+        features = extract_features(board, self.input_size)
+        tensor = torch.from_numpy(features).unsqueeze(0)
+        with torch.no_grad():
+            return float(self.model(tensor).item())
+
     def __call__(self, board):
+        if not self._use_incremental(board):
+            return self._full_value(board)
         return float(
             self._forward_from_accumulator(self.accumulator(board)).item()
         )
@@ -131,10 +156,43 @@ class ModelEvaluator:
     def evaluate_many(self, boards):
         if not boards:
             return np.zeros(0, dtype=np.float32)
-        accumulators = torch.stack(
-            [self.accumulator(board) for board in boards]
-        )
-        with torch.no_grad():
-            x = torch.clamp(torch.relu(accumulators), max=1.0)
-            x = torch.clamp(torch.relu(self.model.fc2(x)), max=1.0)
-            return torch.tanh(self.model.fc3(x)).squeeze(1).cpu().numpy()
+
+        result = np.empty(len(boards), dtype=np.float32)
+        incremental_indices = [
+            index
+            for index, board in enumerate(boards)
+            if self._use_incremental(board)
+        ]
+        full_indices = [
+            index
+            for index, board in enumerate(boards)
+            if not self._use_incremental(board)
+        ]
+
+        if incremental_indices:
+            accumulators = torch.stack(
+                [self.accumulator(boards[index]) for index in incremental_indices]
+            )
+            with torch.no_grad():
+                x = torch.clamp(torch.relu(accumulators), max=1.0)
+                x = torch.clamp(torch.relu(self.model.fc2(x)), max=1.0)
+                values = torch.tanh(self.model.fc3(x)).squeeze(1).cpu().numpy()
+            result[np.asarray(incremental_indices, dtype=np.intp)] = values
+
+        if full_indices:
+            features = np.stack(
+                [
+                    extract_features(boards[index], self.input_size)
+                    for index in full_indices
+                ]
+            )
+            with torch.no_grad():
+                values = (
+                    self.model(torch.from_numpy(features))
+                    .squeeze(1)
+                    .cpu()
+                    .numpy()
+                )
+            result[np.asarray(full_indices, dtype=np.intp)] = values
+
+        return result

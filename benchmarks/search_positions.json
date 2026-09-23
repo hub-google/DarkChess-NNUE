@@ -23,9 +23,9 @@
   "throughput_game": {
     "opening_depth": 1,
     "node_budgets": {
-      "early": 1000,
-      "mid": 3000,
-      "late": 6000
+      "early": 500,
+      "mid": 1000,
+      "late": 2000
     }
   }
 }

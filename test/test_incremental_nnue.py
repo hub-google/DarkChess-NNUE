@@ -71,6 +71,32 @@ class IncrementalNNUETests(unittest.TestCase):
             places=5,
         )
 
+
+    def test_fully_revealed_position_uses_full_forward_fallback(self):
+        board = self.board
+        while int(board.hidden_bitboard) != 0:
+            flips = [
+                int(move)
+                for move in board.generate_legal_moves()
+                if decode_move(int(move))[2]
+            ]
+            if not flips:
+                self.fail("expected a legal flip while hidden pieces remain")
+            move = flips[0]
+            from_sq, _, _ = decode_move(move)
+            board.make_move(
+                move,
+                flip_piece=int(board.hidden_pieces[from_sq]),
+                validate=False,
+            )
+
+        self.assertFalse(self.evaluator._use_incremental(board))
+        self.assertAlmostEqual(
+            self.evaluator(board),
+            self.full_value(board),
+            places=6,
+        )
+
     def test_incremental_matches_full_forward_through_random_game(self):
         board = self.board
         rng = np.random.default_rng(99)
