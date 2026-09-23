@@ -1,8 +1,7 @@
 import numpy as np
 import torch
 
-from board import BLACK, INITIAL_COUNTS, LEGACY_INPUT_SIZE if False else NONE
-from board import BLACK, RED, decode_move
+from board import BLACK, INITIAL_COUNTS, RED, decode_move
 from train import CURRENT_INPUT_SIZE, LEGACY_INPUT_SIZE, extract_features
 
 
@@ -77,7 +76,7 @@ class ModelEvaluator:
         self.model = model
         self.model.eval()
         self.input_size = int(model.input_size)
-        self._token = id(self)
+        self._token = object()
 
     def _cache(self, board):
         cache = getattr(board, "_nnue_accumulators", None)

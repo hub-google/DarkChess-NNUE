@@ -57,6 +57,20 @@ class IncrementalNNUETests(unittest.TestCase):
             )
             board = child
 
+    def test_in_place_move_invalidates_stale_root_accumulator(self):
+        board = self.board
+        self.evaluator(board)
+        move = int(board.generate_legal_moves()[0])
+        from_sq, _, is_flip = decode_move(move)
+        flip_piece = int(board.hidden_pieces[from_sq]) if is_flip else None
+        board.make_move(move, flip_piece=flip_piece, validate=False)
+
+        self.assertAlmostEqual(
+            self.evaluator(board),
+            self.full_value(board),
+            places=5,
+        )
+
     def test_incremental_matches_full_forward_through_random_game(self):
         board = self.board
         rng = np.random.default_rng(99)

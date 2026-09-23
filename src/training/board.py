@@ -231,6 +231,12 @@ class DarkChessBoardPy:
         if validate and move not in set(int(m) for m in self.generate_legal_moves()):
             raise ValueError(f"illegal move: {move}")
 
+        # This object is about to mutate. Any evaluator accumulator attached
+        # to the old public state is now stale and must not be reused.
+        nnue_cache = getattr(self, "_nnue_accumulators", None)
+        if nnue_cache is not None:
+            nnue_cache.clear()
+
         from_sq, to_sq, is_flip = decode_move(move)
         mover = int(self.side_to_move)
         moved_token = int(self.token_at_square[from_sq])
