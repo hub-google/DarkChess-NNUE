@@ -89,14 +89,29 @@ jobs:
 
       - name: Promote validated challenger
         if: steps.validate.outputs.passed == 'true'
+        env:
+          RECENT_CHAMPIONS: "8"
         run: |
+          mkdir -p models/archive
+          if [ -f models/champion.nnue ]; then
+            OLD_ID=$(sha256sum models/champion.nnue | cut -c1-12)
+            ARCHIVE_NAME="models/archive/champion-$(date -u +%Y%m%dT%H%M%SZ)-${OLD_ID}.nnue"
+            cp models/champion.nnue "$ARCHIVE_NAME"
+          fi
+
           mv models/challenger.nnue models/champion.nnue
+
+          mapfile -t ARCHIVES < <(find models/archive -maxdepth 1 -type f -name 'champion-*.nnue' | sort -r)
+          if [ "${#ARCHIVES[@]}" -gt "$RECENT_CHAMPIONS" ]; then
+            printf '%s\n' "${ARCHIVES[@]:$RECENT_CHAMPIONS}" | xargs -r rm -f
+          fi
+
           python src/training/export_nnue.py \
             --input models/champion.nnue \
             --output-dir frontend/public/models
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/champion.nnue frontend/public/models/
+          git add models/champion.nnue models/archive/ frontend/public/models/
           if ! git diff --staged --quiet; then
             git commit -m "chore: promote validated NNUE champion"
             git push

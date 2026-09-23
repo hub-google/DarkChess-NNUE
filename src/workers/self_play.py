@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,22 @@ SLOW_SEARCH_SECONDS = 300
 
 
 
-def load_evaluator():
+def model_id_from_path(path):
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
+    return f"nnue-{digest}"
+
+
+def load_model_evaluator(path, label):
+    model = load_model_file(path)
+    model_id = model_id_from_path(path)
+    print(
+        f"[Self-Play] Loaded {label} {model_id} with {model.input_size} "
+        f"input features from {path}."
+    )
+    return ModelEvaluator(model), model_id
+
+
+def load_evaluator_pool():
     champion_path = Path(
         os.environ.get(
             "CHAMPION_PATH",
@@ -37,15 +53,47 @@ def load_evaluator():
     )
     if not champion_path.exists():
         print("[Self-Play] No champion found; using public-state material bootstrap.")
-        return material_evaluate, "bootstrap-material"
+        return (material_evaluate, "bootstrap-material"), []
 
     torch.set_num_threads(max(1, int(os.environ.get("TORCH_NUM_THREADS", "1"))))
-    model = load_model_file(champion_path)
-    print(
-        f"[Self-Play] Loaded champion with {model.input_size} input features "
-        f"from {champion_path}."
+    champion = load_model_evaluator(champion_path, "champion")
+
+    archive_dir = Path(
+        os.environ.get(
+            "CHAMPION_ARCHIVE_DIR",
+            str(PROJECT_ROOT / "models" / "archive"),
+        )
     )
-    return ModelEvaluator(model), f"champion-{model.input_size}"
+    recent_limit = max(0, int(os.environ.get("RECENT_CHAMPIONS", "8")))
+    archive_paths = (
+        sorted(archive_dir.glob("champion-*.nnue"), reverse=True)[:recent_limit]
+        if recent_limit
+        else []
+    )
+    archives = [
+        load_model_evaluator(path, "archived champion")
+        for path in archive_paths
+    ]
+    return champion, archives
+
+
+def load_evaluator():
+    """Backward-compatible current champion loader."""
+    champion, _ = load_evaluator_pool()
+    return champion
+
+
+def choose_opponent(champion, archives, rng, archive_probability=None):
+    if not archives:
+        return champion
+    if archive_probability is None:
+        archive_probability = float(
+            os.environ.get("ARCHIVE_OPPONENT_PROBABILITY", "0.25")
+        )
+    probability = min(max(float(archive_probability), 0.0), 1.0)
+    if rng.random() >= probability:
+        return champion
+    return archives[int(rng.integers(0, len(archives)))]
 
 
 def choose_search_depth(hidden_count):
@@ -73,9 +121,19 @@ def choose_opening_depth():
     return max(1, int(os.environ.get("OPENING_SEARCH_DEPTH", "1")))
 
 
-def play_game(evaluator, model_version, rng, temperature, explore_plies):
+def play_game(
+    evaluator,
+    model_version,
+    rng,
+    temperature,
+    explore_plies,
+    opponent_evaluator=None,
+    opponent_model_version=None,
+):
     game_started = time.perf_counter()
     board = DarkChessBoardPy()
+    opponent_evaluator = opponent_evaluator or evaluator
+    opponent_model_version = opponent_model_version or model_version
     record = {
         "id": str(uuid.uuid4()),
         "ts": int(time.time() * 1000),
@@ -114,6 +172,18 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
     record["v"].append(float(np.clip(evaluator(board), -1.0, 1.0)))
     board.make_move(first_move, validate=False)
 
+    first_color = 1 - int(board.side_to_move)
+    evaluators = {
+        first_color: evaluator,
+        1 - first_color: opponent_evaluator,
+    }
+    model_versions = {
+        first_color: model_version,
+        1 - first_color: opponent_model_version,
+    }
+    record["red_model"] = model_versions[0]
+    record["black_model"] = model_versions[1]
+
     while record["ply"] < 512:
         over, result = board.is_game_over()
         if over:
@@ -130,10 +200,11 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
             )
             active_depth = search_depth
         node_budget = choose_node_budget(hidden_count)
-        static_value = float(np.clip(evaluator(board), -1.0, 1.0))
+        turn_evaluator = evaluators[int(board.side_to_move)]
+        static_value = float(np.clip(turn_evaluator(board), -1.0, 1.0))
         search_started = time.perf_counter()
         search = ChanceSearch(
-            evaluator=evaluator,
+            evaluator=turn_evaluator,
             max_depth=search_depth,
             node_budget=node_budget,
         )
@@ -189,19 +260,33 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
     return record
 
 
-def run_batch(batch_size, output_dir, evaluator, model_version, rng):
+def run_batch(
+    batch_size,
+    output_dir,
+    evaluator,
+    model_version,
+    rng,
+    opponent_pool=None,
+):
     temperature = float(os.environ.get("SELF_PLAY_TEMPERATURE", "0.8"))
     explore_plies = int(os.environ.get("EXPLORE_PLIES", "20"))
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for index in range(batch_size):
         print(f"[Self-Play] Starting game {index + 1}/{batch_size}.")
+        opponent = choose_opponent(
+            (evaluator, model_version),
+            opponent_pool or [],
+            rng,
+        )
         game = play_game(
             evaluator,
             model_version,
             rng,
             temperature,
             explore_plies,
+            opponent_evaluator=opponent[0],
+            opponent_model_version=opponent[1],
         )
         output_path = output_dir / f"data_{int(time.time() * 1000)}_{game['id']}.jsonl.gz"
         with gzip.open(output_path, "wt", encoding="utf-8") as handle:
@@ -215,7 +300,7 @@ def main():
     output_dir = Path(os.environ.get("OUTPUT_DIR", "output_data"))
     seed = int(os.environ.get("SELF_PLAY_SEED", str(time.time_ns() % (2**32))))
     rng = np.random.default_rng(seed)
-    evaluator, model_version = load_evaluator()
+    (evaluator, model_version), opponent_pool = load_evaluator_pool()
 
     print(
         f"[Self-Play] Starting {num_batches} batches x {batch_size} games "
@@ -223,7 +308,14 @@ def main():
         f"adaptive depths after first flip: hidden 24-31=3, 12-23=10, 0-11=12."
     )
     for _ in range(num_batches):
-        run_batch(batch_size, output_dir, evaluator, model_version, rng)
+        run_batch(
+            batch_size,
+            output_dir,
+            evaluator,
+            model_version,
+            rng,
+            opponent_pool=opponent_pool,
+        )
 
 
 if __name__ == "__main__":

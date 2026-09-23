@@ -1,4 +1,5 @@
 import gzip
+import numpy as np
 import json
 import sys
 import tempfile
@@ -33,6 +34,46 @@ class AdaptiveDepthTests(unittest.TestCase):
         for hidden_count, depth in expected.items():
             with self.subTest(hidden_count=hidden_count):
                 self.assertEqual(self_play.choose_search_depth(hidden_count), depth)
+
+
+@unittest.skipIf(self_play is None, "torch is not installed in this test environment")
+class OpponentPoolTests(unittest.TestCase):
+    def test_archive_probability_zero_keeps_current_champion(self):
+        champion = (object(), "current")
+        archive = [(object(), "old")]
+        rng = np.random.default_rng(1)
+        self.assertIs(
+            self_play.choose_opponent(
+                champion,
+                archive,
+                rng,
+                archive_probability=0.0,
+            ),
+            champion,
+        )
+
+    def test_archive_probability_one_selects_archive(self):
+        champion = (object(), "current")
+        archive = [(object(), "old-a"), (object(), "old-b")]
+        rng = np.random.default_rng(2)
+        selected = self_play.choose_opponent(
+            champion,
+            archive,
+            rng,
+            archive_probability=1.0,
+        )
+        self.assertIn(selected[1], {"old-a", "old-b"})
+
+    def test_model_id_is_content_stable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "first.nnue"
+            second = Path(temp_dir) / "second.nnue"
+            first.write_bytes(b"same-model")
+            second.write_bytes(b"same-model")
+            self.assertEqual(
+                self_play.model_id_from_path(first),
+                self_play.model_id_from_path(second),
+            )
 
 
 @unittest.skipIf(self_play is None, "torch is not installed in this test environment")
