@@ -57,6 +57,7 @@ def load_evaluator():
         print("[Self-Play] No champion found; using public-state material bootstrap.")
         return material_evaluate, "bootstrap-material"
 
+    torch.set_num_threads(max(1, int(os.environ.get("TORCH_NUM_THREADS", "1"))))
     model = load_model_file(champion_path)
     print(
         f"[Self-Play] Loaded champion with {model.input_size} input features "
@@ -72,6 +73,14 @@ def choose_search_depth(hidden_count):
     if hidden_count >= 12:
         return 10
     return 12
+
+
+def choose_node_budget(hidden_count):
+    if hidden_count >= 24:
+        return int(os.environ.get("SEARCH_NODE_BUDGET_EARLY", "12000"))
+    if hidden_count >= 12:
+        return int(os.environ.get("SEARCH_NODE_BUDGET_MID", "50000"))
+    return int(os.environ.get("SEARCH_NODE_BUDGET_LATE", "120000"))
 
 
 def choose_opening_depth():
@@ -93,6 +102,7 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
         "hid": [int(piece) for piece in board.hidden_pieces],
         "mov": [],
         "q": [],
+        "v": [],
         "res": 0.0,
         "ply": 0,
     }
@@ -119,6 +129,7 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
     first_move = select_first_flip(opening, temperature=temperature, rng=rng)
     record["mov"].append(first_move)
     record["q"].append(float(opening.move_values[first_move]))
+    record["v"].append(float(np.clip(evaluator(board), -1.0, 1.0)))
     board.make_move(first_move, validate=False)
 
     while record["ply"] < 512:
@@ -136,8 +147,14 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
                 f"ply={move_number} hidden={hidden_count} depth={search_depth}."
             )
             active_depth = search_depth
+        node_budget = choose_node_budget(hidden_count)
+        static_value = float(np.clip(evaluator(board), -1.0, 1.0))
         search_started = time.perf_counter()
-        search = ChanceSearch(evaluator=evaluator, max_depth=search_depth)
+        search = ChanceSearch(
+            evaluator=evaluator,
+            max_depth=search_depth,
+            node_budget=node_budget,
+        )
         analysis = search.analyze(board)
         search_seconds = time.perf_counter() - search_started
         total_nodes += analysis.nodes
@@ -154,7 +171,7 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
                 f"[Self-Play] Search exceeded {SLOW_SEARCH_SECONDS}s: "
                 f"game={record['id']} "
                 f"ply={move_number} hidden={hidden_count} "
-                f"depth={search_depth} nodes={analysis.nodes} "
+                f"depth={analysis.depth}/{search_depth} nodes={analysis.nodes} "
                 f"seconds={search_seconds:.1f}."
             )
         current_temperature = (
@@ -168,6 +185,7 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
         )
         record["mov"].append(int(chosen))
         record["q"].append(float(analysis.move_values[chosen]))
+        record["v"].append(static_value)
         board.make_move(chosen, validate=False)
         record["ply"] += 1
     else:
