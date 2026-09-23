@@ -149,6 +149,16 @@ class ChanceSearch:
         if self.node_budget is not None and self.nodes > self.node_budget:
             raise SearchBudgetExceeded
 
+    def _prepare_child(self, parent, child, move, flip_piece=None):
+        prepare_child = getattr(self.evaluator, "prepare_child", None)
+        if prepare_child is not None:
+            prepare_child(
+                parent,
+                child,
+                move,
+                flip_piece=flip_piece,
+            )
+
     def _evaluate_leaf_boards(self, boards):
         values = np.zeros(len(boards), dtype=np.float64)
         pending_indices = []
@@ -190,11 +200,13 @@ class ChanceSearch:
                         continue
                     child = board.clone()
                     child.make_move(move, flip_piece=piece, validate=False)
+                    self._prepare_child(board, child, move, flip_piece=piece)
                     leaves.append(child)
                     metadata.append((move, count / total))
             else:
                 child = board.clone()
                 child.make_move(move, validate=False)
+                self._prepare_child(board, child, move)
                 leaves.append(child)
                 metadata.append((move, 1.0))
 
@@ -234,6 +246,7 @@ class ChanceSearch:
             probability = count / total
             child = board.clone()
             child.make_move(move, flip_piece=piece, validate=False)
+            self._prepare_child(board, child, move, flip_piece=piece)
             value = self._value(child, depth - 1, -math.inf, math.inf)
             expected += probability * value
             probability_done += probability
@@ -253,6 +266,7 @@ class ChanceSearch:
             return self._flip_value(board, move, depth, alpha, beta)
         child = board.clone()
         child.make_move(move, validate=False)
+        self._prepare_child(board, child, move)
         return self._value(child, depth - 1, alpha, beta)
 
     def _value(self, board, depth, alpha, beta):
@@ -387,6 +401,7 @@ class ChanceSearch:
                         continue
                     child = board.clone()
                     child.make_move(representative, flip_piece=piece, validate=False)
+                    self._prepare_child(board, child, representative, flip_piece=piece)
                     sign = 1.0 if PIECE_COLOR[piece] == RED else -1.0
                     leaves.append(child)
                     weights.append(sign * count / total)
@@ -405,6 +420,7 @@ class ChanceSearch:
                         continue
                     child = board.clone()
                     child.make_move(move, flip_piece=piece, validate=False)
+                    self._prepare_child(board, child, move, flip_piece=piece)
                     sign = 1.0 if PIECE_COLOR[piece] == RED else -1.0
                     leaves.append(child)
                     metadata.append((move, sign * count / total))
@@ -425,6 +441,7 @@ class ChanceSearch:
                     continue
                 child = board.clone()
                 child.make_move(move, flip_piece=piece, validate=False)
+                self._prepare_child(board, child, move, flip_piece=piece)
                 red_value = self._value(child, self.max_depth - 1, -math.inf, math.inf)
                 first_player_value = red_value if PIECE_COLOR[piece] == RED else -red_value
                 expected_utility += (count / total) * first_player_value
@@ -439,6 +456,27 @@ class ChanceSearch:
             self.nodes,
             self.max_depth,
         )
+
+class ExactChanceSearch(ChanceSearch):
+    """Reference expectiminimax that never applies Star1 chance cutoffs."""
+
+    def _flip_value(self, board, move, depth, alpha, beta):
+        total = int(board.remaining_counts.sum())
+        if total <= 0:
+            raise ValueError("flip move generated with an empty bag")
+
+        expected = 0.0
+        for piece, count in enumerate(board.remaining_counts):
+            count = int(count)
+            if count <= 0:
+                continue
+            child = board.clone()
+            child.make_move(move, flip_piece=piece, validate=False)
+            self._prepare_child(board, child, move, flip_piece=piece)
+            value = self._value(child, depth - 1, -math.inf, math.inf)
+            expected += (count / total) * value
+        return float(np.clip(expected, -1.0, 1.0))
+
 
 def select_move(result, color, temperature=0.0, rng=None):
     if temperature <= 0 or len(result.move_values) == 1:

@@ -21,29 +21,11 @@ from search import (  # noqa: E402
     select_first_flip,
     select_move,
 )
-from train import extract_features, load_model_file  # noqa: E402
+from nnue_eval import ModelEvaluator  # noqa: E402
+from train import load_model_file  # noqa: E402
 
 SLOW_SEARCH_SECONDS = 300
 
-
-class ModelEvaluator:
-    def __init__(self, model):
-        self.model = model
-        self.model.eval()
-
-    def __call__(self, board):
-        features = extract_features(board, self.model.input_size)
-        tensor = torch.from_numpy(features).unsqueeze(0)
-        with torch.no_grad():
-            return float(self.model(tensor).item())
-
-    def evaluate_many(self, boards):
-        features = np.stack(
-            [extract_features(board, self.model.input_size) for board in boards]
-        )
-        tensor = torch.from_numpy(features)
-        with torch.no_grad():
-            return self.model(tensor).squeeze(1).cpu().numpy()
 
 
 def load_evaluator():

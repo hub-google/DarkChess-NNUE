@@ -3,7 +3,6 @@ import math
 import os
 
 import numpy as np
-import torch
 
 from board import (
     BLACK,
@@ -12,28 +11,10 @@ from board import (
     RED,
     DarkChessBoardPy,
 )
+from nnue_eval import ModelEvaluator
 from search import ChanceSearch
-from train import extract_features, load_model_file
+from train import load_model_file
 
-
-class ModelEvaluator:
-    def __init__(self, model):
-        self.model = model
-        self.model.eval()
-
-    def __call__(self, board):
-        features = extract_features(board, self.model.input_size)
-        tensor = torch.from_numpy(features).unsqueeze(0)
-        with torch.no_grad():
-            return float(self.model(tensor).item())
-
-    def evaluate_many(self, boards):
-        features = np.stack(
-            [extract_features(board, self.model.input_size) for board in boards]
-        )
-        tensor = torch.from_numpy(features)
-        with torch.no_grad():
-            return self.model(tensor).squeeze(1).cpu().numpy()
 
 
 def make_bag(rng):
