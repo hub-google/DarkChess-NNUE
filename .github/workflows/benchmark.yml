@@ -1,0 +1,34 @@
+name: CPU search benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "benchmarks/**"
+      - ".github/workflows/benchmark.yml"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run CPU benchmark
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: python -u benchmarks/search_benchmark.py
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-search-benchmark-${{ github.sha }}
+          path: benchmark_results.json
+          retention-days: 30

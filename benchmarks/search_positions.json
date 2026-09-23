@@ -1,0 +1,23 @@
+{
+  "seed": 20260923,
+  "positions": [
+    {
+      "name": "early",
+      "hidden": 24,
+      "max_depth": 6,
+      "node_budget": 5000
+    },
+    {
+      "name": "mid",
+      "hidden": 12,
+      "max_depth": 8,
+      "node_budget": 5000
+    },
+    {
+      "name": "late",
+      "hidden": 0,
+      "max_depth": 10,
+      "node_budget": 5000
+    }
+  ]
+}
