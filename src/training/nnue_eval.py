@@ -65,6 +65,34 @@ def feature_deltas(
     return deltas
 
 
+class FullForwardEvaluator:
+    """Direct PyTorch evaluator used when incremental updates are not profitable."""
+
+    def __init__(self, model):
+        self.model = model
+        self.input_size = int(model.input_size)
+
+    def __call__(self, board):
+        features = extract_features(board, self.input_size)
+        tensor = torch.from_numpy(features).unsqueeze(0)
+        with torch.no_grad():
+            return float(self.model(tensor).item())
+
+    def evaluate_many(self, boards):
+        if not boards:
+            return np.zeros(0, dtype=np.float32)
+        features = np.stack(
+            [extract_features(board, self.input_size) for board in boards]
+        )
+        with torch.no_grad():
+            return (
+                self.model(torch.from_numpy(features))
+                .squeeze(1)
+                .cpu()
+                .numpy()
+            )
+
+
 class ModelEvaluator:
     """
     CPU NNUE evaluator with an incremental first-layer accumulator.
@@ -79,6 +107,7 @@ class ModelEvaluator:
         self.model.eval()
         self.input_size = int(model.input_size)
         self._token = object()
+        self._full_view = FullForwardEvaluator(model)
         # Incremental first-layer updates are most valuable while chance
         # information is still present. On fully revealed positions, PyTorch's
         # batched full forward is faster than many tiny vector updates.
@@ -92,6 +121,10 @@ class ModelEvaluator:
             int(board.hidden_bitboard).bit_count()
             >= self.incremental_min_hidden
         )
+
+    def for_position(self, board):
+        """Bind one search to the cheapest evaluator path for its root phase."""
+        return self if self._use_incremental(board) else self._full_view
 
     def _cache(self, board):
         cache = getattr(board, "_nnue_accumulators", None)
@@ -141,10 +174,7 @@ class ModelEvaluator:
             return torch.tanh(self.model.fc3(x))
 
     def _full_value(self, board):
-        features = extract_features(board, self.input_size)
-        tensor = torch.from_numpy(features).unsqueeze(0)
-        with torch.no_grad():
-            return float(self.model(tensor).item())
+        return self._full_view(board)
 
     def __call__(self, board):
         if not self._use_incremental(board):

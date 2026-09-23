@@ -72,6 +72,29 @@ class IncrementalNNUETests(unittest.TestCase):
         )
 
 
+    def test_for_position_binds_revealed_search_to_full_view(self):
+        board = self.board
+        while int(board.hidden_bitboard).bit_count() > 12:
+            flips = [
+                int(move)
+                for move in board.generate_legal_moves()
+                if decode_move(int(move))[2]
+            ]
+            move = flips[0]
+            from_sq, _, _ = decode_move(move)
+            board.make_move(
+                move,
+                flip_piece=int(board.hidden_pieces[from_sq]),
+                validate=False,
+            )
+        bound = self.evaluator.for_position(board)
+        self.assertIsNot(bound, self.evaluator)
+        self.assertAlmostEqual(
+            bound(board),
+            self.full_value(board),
+            places=6,
+        )
+
     def test_default_hybrid_threshold_keeps_midgame_on_full_forward(self):
         board = self.board
         while int(board.hidden_bitboard).bit_count() > 12:

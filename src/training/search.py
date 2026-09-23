@@ -135,6 +135,12 @@ class ChanceSearch:
         self.nodes = 0
         self.cache = {}
         self.chance_cutoffs = 0
+        self._active_evaluator = self.evaluator
+        self._prepare_child_hook = getattr(
+            self._active_evaluator,
+            "prepare_child",
+            None,
+        )
 
     def _cache_key(self, board):
         return (
@@ -150,10 +156,21 @@ class ChanceSearch:
         if self.node_budget is not None and self.nodes > self.node_budget:
             raise SearchBudgetExceeded
 
+    def _bind_evaluator(self, board):
+        binder = getattr(self.evaluator, "for_position", None)
+        self._active_evaluator = (
+            binder(board) if binder is not None else self.evaluator
+        )
+        self._prepare_child_hook = getattr(
+            self._active_evaluator,
+            "prepare_child",
+            None,
+        )
+
+
     def _prepare_child(self, parent, child, move, flip_piece=None):
-        prepare_child = getattr(self.evaluator, "prepare_child", None)
-        if prepare_child is not None:
-            prepare_child(
+        if self._prepare_child_hook is not None:
+            self._prepare_child_hook(
                 parent,
                 child,
                 move,
@@ -174,9 +191,12 @@ class ChanceSearch:
                 pending_boards.append(board)
 
         if pending_boards:
-            evaluate_many = getattr(self.evaluator, "evaluate_many", None)
+            evaluate_many = getattr(self._active_evaluator, "evaluate_many", None)
             if evaluate_many is None:
-                pending_values = [self.evaluator(board) for board in pending_boards]
+                pending_values = [
+                    self._active_evaluator(board)
+                    for board in pending_boards
+                ]
             else:
                 pending_values = evaluate_many(pending_boards)
             for index, value in zip(pending_indices, pending_values):
@@ -278,7 +298,7 @@ class ChanceSearch:
         if over:
             return float(result)
         if depth <= 0:
-            return float(np.clip(self.evaluator(board), -1.0, 1.0))
+            return float(np.clip(self._active_evaluator(board), -1.0, 1.0))
 
         key = self._cache_key(board)
         alpha0, beta0 = alpha, beta
@@ -361,6 +381,7 @@ class ChanceSearch:
         self.nodes = 0
         self.chance_cutoffs = 0
         self.cache.clear()
+        self._bind_evaluator(board)
         if self.node_budget is None:
             return self._analyze_fixed(board, self.max_depth)
 
@@ -389,6 +410,7 @@ class ChanceSearch:
         self.nodes = 0
         self.chance_cutoffs = 0
         self.cache.clear()
+        self._bind_evaluator(board)
         moves = _ordered_moves(board, board.generate_legal_moves())
         groups = _opening_symmetry_groups(moves)
         search_moves = [group[0] for group in groups]
