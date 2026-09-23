@@ -6,12 +6,19 @@ on:
     branches: [master]
     paths:
       - "benchmarks/**"
+      - "src/training/board.py"
+      - "src/training/nnue_eval.py"
+      - "src/training/search.py"
+      - "src/training/tablebase.py"
+      - "src/training/train.py"
+      - "src/workers/self_play.py"
+      - "models/champion.nnue"
       - ".github/workflows/benchmark.yml"
 
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

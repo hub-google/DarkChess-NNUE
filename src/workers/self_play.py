@@ -129,6 +129,7 @@ def play_game(
     explore_plies,
     opponent_evaluator=None,
     opponent_model_version=None,
+    collect_metrics=False,
 ):
     game_started = time.perf_counter()
     board = DarkChessBoardPy()
@@ -150,6 +151,10 @@ def play_game(
     total_nodes = 0
     total_search_seconds = 0.0
     slowest_search = None
+    search_count = 0
+    completed_depth_sum = 0
+    requested_depth_sum = 0
+    budget_limited_searches = 0
 
     opening_depth = choose_opening_depth()
     active_depth = opening_depth
@@ -166,6 +171,9 @@ def play_game(
     total_nodes += opening.nodes
     total_search_seconds += opening_seconds
     slowest_search = (opening_seconds, 1, opening_depth, opening.nodes)
+    search_count += 1
+    completed_depth_sum += int(opening.depth)
+    requested_depth_sum += int(opening_depth)
     first_move = select_first_flip(opening, temperature=temperature, rng=rng)
     record["mov"].append(first_move)
     record["q"].append(float(opening.move_values[first_move]))
@@ -212,6 +220,11 @@ def play_game(
         search_seconds = time.perf_counter() - search_started
         total_nodes += analysis.nodes
         total_search_seconds += search_seconds
+        search_count += 1
+        completed_depth_sum += int(analysis.depth)
+        requested_depth_sum += int(search_depth)
+        if int(analysis.depth) < int(search_depth):
+            budget_limited_searches += 1
         if slowest_search is None or search_seconds > slowest_search[0]:
             slowest_search = (
                 search_seconds,
@@ -257,6 +270,37 @@ def play_game(
         f"slowest_depth={slow_depth} slowest_nodes={slow_nodes} "
         f"slowest_seconds={slow_seconds:.1f}."
     )
+    if collect_metrics:
+        metrics = {
+            "elapsed_seconds": float(elapsed),
+            "search_seconds": float(total_search_seconds),
+            "total_nodes": int(total_nodes),
+            "nodes_per_second": float(nodes_per_second),
+            "searches": int(search_count),
+            "average_completed_depth": (
+                float(completed_depth_sum) / search_count
+                if search_count
+                else 0.0
+            ),
+            "average_requested_depth": (
+                float(requested_depth_sum) / search_count
+                if search_count
+                else 0.0
+            ),
+            "average_move_seconds": (
+                float(total_search_seconds) / search_count
+                if search_count
+                else 0.0
+            ),
+            "budget_limited_searches": int(budget_limited_searches),
+            "budget_limited_rate": (
+                float(budget_limited_searches) / search_count
+                if search_count
+                else 0.0
+            ),
+            "games_per_hour": 3600.0 / elapsed if elapsed else 0.0,
+        }
+        return record, metrics
     return record
 
 

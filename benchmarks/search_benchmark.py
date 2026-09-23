@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -8,13 +9,16 @@ import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DIR = PROJECT_ROOT / "src" / "training"
+WORKERS_DIR = PROJECT_ROOT / "src" / "workers"
 sys.path.insert(0, str(TRAINING_DIR))
+sys.path.insert(0, str(WORKERS_DIR))
 
 from board import DarkChessBoardPy, INITIAL_COUNTS, decode_move
 from nnue_eval import ModelEvaluator
 from search import ChanceSearch, ExactChanceSearch
 from tablebase import estimate_raw_states
 from train import extract_features, load_model_file
+import self_play
 
 
 class FullModelEvaluator:
@@ -188,6 +192,77 @@ def benchmark_star1(model, seed):
     return rows
 
 
+def summarize_search(rows, label):
+    total_nodes = sum(row[label]["nodes"] for row in rows)
+    total_seconds = sum(row[label]["seconds"] for row in rows)
+    return {
+        "positions": len(rows),
+        "nodes": int(total_nodes),
+        "seconds": float(total_seconds),
+        "nodes_per_sec": (
+            float(total_nodes) / total_seconds if total_seconds else 0.0
+        ),
+        "average_completed_depth": (
+            sum(row[label]["completed_depth"] for row in rows) / len(rows)
+            if rows
+            else 0.0
+        ),
+        "average_move_seconds": (
+            total_seconds / len(rows) if rows else 0.0
+        ),
+    }
+
+
+def benchmark_complete_game(model, config):
+    spec = config.get("throughput_game", {})
+    env_keys = (
+        "SEARCH_NODE_BUDGET_EARLY",
+        "SEARCH_NODE_BUDGET_MID",
+        "SEARCH_NODE_BUDGET_LATE",
+        "OPENING_SEARCH_DEPTH",
+    )
+    old_env = {key: os.environ.get(key) for key in env_keys}
+    budgets = spec.get(
+        "node_budgets",
+        {"early": 1000, "mid": 3000, "late": 6000},
+    )
+    os.environ["SEARCH_NODE_BUDGET_EARLY"] = str(budgets["early"])
+    os.environ["SEARCH_NODE_BUDGET_MID"] = str(budgets["mid"])
+    os.environ["SEARCH_NODE_BUDGET_LATE"] = str(budgets["late"])
+    os.environ["OPENING_SEARCH_DEPTH"] = str(spec.get("opening_depth", 1))
+    try:
+        seed = int(config["seed"]) + 500
+        np.random.seed(seed)
+        evaluator = ModelEvaluator(model)
+        record, metrics = self_play.play_game(
+            evaluator,
+            "benchmark-current",
+            np.random.default_rng(seed),
+            temperature=0.0,
+            explore_plies=0,
+            collect_metrics=True,
+        )
+        metrics["plies"] = int(record["ply"])
+        metrics["result"] = float(record["res"])
+        metrics["node_budgets"] = {
+            "early": int(budgets["early"]),
+            "mid": int(budgets["mid"]),
+            "late": int(budgets["late"]),
+        }
+        metrics["note"] = (
+            "Complete-game throughput uses reduced benchmark budgets so it "
+            "finishes quickly; production-budget speed is measured separately "
+            "on fixed early/mid/late positions."
+        )
+        return metrics
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def main():
     torch.set_num_threads(1)
     config = json.loads(
@@ -200,10 +275,16 @@ def main():
 
     positions = make_positions(config)
     transitions = build_transition_samples(config["seed"] + 100)
+    search_rows = benchmark_search(model, positions, config)
     output = {
         "model_input_size": int(model.input_size),
         "evaluator": benchmark_evaluator(model, transitions),
-        "search": benchmark_search(model, positions, config),
+        "search": search_rows,
+        "search_summary": {
+            "full": summarize_search(search_rows, "full"),
+            "incremental": summarize_search(search_rows, "incremental"),
+        },
+        "complete_game_throughput": benchmark_complete_game(model, config),
         "star1_vs_exact": benchmark_star1(model, config["seed"] + 200),
         "tablebase_raw_state_lower_bounds": {
             str(pieces): estimate_raw_states(pieces)

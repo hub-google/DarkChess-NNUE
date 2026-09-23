@@ -4,20 +4,28 @@
     {
       "name": "early",
       "hidden": 24,
-      "max_depth": 6,
-      "node_budget": 5000
+      "max_depth": 3,
+      "node_budget": 12000
     },
     {
       "name": "mid",
       "hidden": 12,
-      "max_depth": 8,
-      "node_budget": 5000
+      "max_depth": 10,
+      "node_budget": 50000
     },
     {
       "name": "late",
       "hidden": 0,
-      "max_depth": 10,
-      "node_budget": 5000
+      "max_depth": 12,
+      "node_budget": 120000
     }
-  ]
+  ],
+  "throughput_game": {
+    "opening_depth": 1,
+    "node_budgets": {
+      "early": 1000,
+      "mid": 3000,
+      "late": 6000
+    }
+  }
 }

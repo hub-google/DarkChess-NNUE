@@ -1,0 +1,100 @@
+name: NNUE pipeline smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "src/training/**"
+      - "src/workers/self_play.py"
+      - "test/**"
+      - ".github/workflows/pipeline_smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Generate one complete self-play game
+        env:
+          BATCH_SIZE: "1"
+          NUM_BATCHES: "1"
+          OUTPUT_DIR: "output_data"
+          SELF_PLAY_SEED: "20260923"
+          SELF_PLAY_TEMPERATURE: "0.0"
+          EXPLORE_PLIES: "0"
+          OPENING_SEARCH_DEPTH: "1"
+          SEARCH_NODE_BUDGET_EARLY: "200"
+          SEARCH_NODE_BUDGET_MID: "500"
+          SEARCH_NODE_BUDGET_LATE: "1000"
+          ARCHIVE_OPPONENT_PROBABILITY: "0"
+          TORCH_NUM_THREADS: "1"
+        run: python -u src/workers/self_play.py
+
+      - name: Build binary cache and small reanalysis sample
+        env:
+          DATASET_DIR: "output_data"
+          TRAINING_CACHE_DIR: "training_cache"
+          MAX_POSITIONS_PER_GAME: "4"
+          MAX_TRAINING_SAMPLES: "16"
+          TRAINING_CACHE_SHARD_SIZE: "16"
+          REANALYSIS_CANDIDATES: "4"
+          REANALYSIS_MAX_POSITIONS: "2"
+          REANALYSIS_DEPTH: "2"
+          REANALYSIS_NODE_BUDGET: "500"
+          TORCH_NUM_THREADS: "1"
+        run: python -u src/training/build_training_cache.py
+
+      - name: Train a tiny challenger
+        env:
+          DATASET_DIR: "output_data"
+          TRAINING_CACHE_DIR: "training_cache"
+          BATCH_SIZE: "4"
+          TRAINING_EPOCHS: "1"
+          LEARNING_RATE: "0.0001"
+          MAX_POSITIONS_PER_GAME: "4"
+          MAX_TRAINING_SAMPLES: "16"
+        run: python -u src/training/train.py
+
+      - name: Run a minimal paired validation
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/training/sprt_validation.py \
+            --champion models/champion.nnue \
+            --challenger models/challenger.nnue \
+            --pairs 1 \
+            --depth 1 \
+            --node-budget 200 \
+            --elo0 -15 \
+            --elo1 15
+
+      - name: Export challenger
+        run: |
+          rm -rf smoke_export
+          python src/training/export_nnue.py \
+            --input models/challenger.nnue \
+            --output-dir smoke_export
+          test -s smoke_export/champion.bin
+          test -s smoke_export/champion.json
+
+      - name: Upload smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-smoke-${{ github.sha }}
+          path: |
+            training_cache/manifest.json
+            smoke_export/champion.json
+          retention-days: 7
