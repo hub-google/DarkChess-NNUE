@@ -64,6 +64,18 @@ jobs:
           mkdir -p datasets
           python -c "from huggingface_hub import hf_hub_download; import shutil; p=hf_hub_download(repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', filename='replay_buffer.jsonl.gz'); shutil.copy(p, 'datasets/replay_buffer.jsonl.gz')"
 
+      - name: Build binary training cache and reanalyze hard positions
+        env:
+          MAX_POSITIONS_PER_GAME: "4"
+          MAX_TRAINING_SAMPLES: "2000000"
+          TRAINING_CACHE_SHARD_SIZE: "50000"
+          REANALYSIS_CANDIDATES: "4096"
+          REANALYSIS_MAX_POSITIONS: "64"
+          REANALYSIS_DEPTH: "10"
+          REANALYSIS_NODE_BUDGET: "50000"
+          TORCH_NUM_THREADS: "1"
+        run: python -u src/training/build_training_cache.py
+
       - name: Train challenger from champion
         env:
           BATCH_SIZE: "1024"
@@ -71,6 +83,7 @@ jobs:
           LEARNING_RATE: "0.0001"
           MAX_POSITIONS_PER_GAME: "4"
           MAX_TRAINING_SAMPLES: "2000000"
+          TRAINING_CACHE_DIR: "training_cache"
         run: python -u src/training/train.py
 
       - name: Validate challenger against champion

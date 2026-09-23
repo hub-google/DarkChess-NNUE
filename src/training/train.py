@@ -229,6 +229,73 @@ def select_training_plies(game, moves, max_positions):
     ).astype(np.int32)
 
 
+class TrainingCacheDataset(IterableDataset):
+    """Read rebuildable NPZ training shards and apply augmentation on the fly."""
+
+    def __init__(
+        self,
+        cache_dir,
+        max_samples=2_000_000,
+        symmetry_augmentation=True,
+        color_swap_augmentation=True,
+    ):
+        self.cache_dir = cache_dir
+        self.files = sorted(glob.glob(os.path.join(cache_dir, "cache_*.npz")))
+        self.max_samples = max_samples
+        self.symmetry_augmentation = symmetry_augmentation
+        self.color_swap_augmentation = color_swap_augmentation
+        override_path = os.path.join(cache_dir, "reanalysis_overrides.npz")
+        self.overrides = {}
+        if os.path.exists(override_path):
+            with np.load(override_path) as data:
+                self.overrides = {
+                    int(index): float(target)
+                    for index, target in zip(data["sample_index"], data["target"])
+                }
+
+    def __iter__(self):
+        rng = np.random.default_rng()
+        files = list(self.files)
+        rng.shuffle(files)
+        yielded = 0
+        for path in files:
+            with np.load(path) as data:
+                features = data["features"]
+                targets = data["targets"]
+                sample_indices = data["sample_index"]
+                order = rng.permutation(len(targets))
+                for row_index in order:
+                    feat = features[row_index].astype(np.float32, copy=True)
+                    sample_index = int(sample_indices[row_index])
+                    target = self.overrides.get(
+                        sample_index,
+                        float(targets[row_index]),
+                    )
+                    transform = (
+                        int(rng.integers(0, SYMMETRY_COUNT))
+                        if self.symmetry_augmentation
+                        else SYM_IDENTITY
+                    )
+                    color_swap = (
+                        bool(rng.integers(0, 2))
+                        if self.color_swap_augmentation
+                        else False
+                    )
+                    feat, target = augment_features(
+                        feat,
+                        target,
+                        transform=transform,
+                        color_swap=color_swap,
+                    )
+                    yield (
+                        torch.from_numpy(feat),
+                        torch.tensor([target], dtype=torch.float32),
+                    )
+                    yielded += 1
+                    if yielded >= self.max_samples:
+                        return
+
+
 class DarkChessDataset(IterableDataset):
     def __init__(
         self,
@@ -374,14 +441,29 @@ def main():
         )
     symmetry_augmentation = _env_enabled("SYMMETRY_AUGMENTATION", True)
     color_swap_augmentation = _env_enabled("COLOR_SWAP_AUGMENTATION", True)
-    dataset = DarkChessDataset(
-        files,
-        input_size=CURRENT_INPUT_SIZE,
-        max_positions_per_game=max_positions,
-        max_samples=max_samples,
-        symmetry_augmentation=symmetry_augmentation,
-        color_swap_augmentation=color_swap_augmentation,
-    )
+    cache_dir = os.environ.get("TRAINING_CACHE_DIR", "training_cache")
+    cache_files = glob.glob(os.path.join(cache_dir, "cache_*.npz"))
+    if cache_files:
+        print(
+            f"Using binary training cache from {cache_dir}: "
+            f"{len(cache_files)} shards."
+        )
+        dataset = TrainingCacheDataset(
+            cache_dir,
+            max_samples=max_samples,
+            symmetry_augmentation=symmetry_augmentation,
+            color_swap_augmentation=color_swap_augmentation,
+        )
+    else:
+        print("Binary cache not found; falling back to raw replay parsing.")
+        dataset = DarkChessDataset(
+            files,
+            input_size=CURRENT_INPUT_SIZE,
+            max_positions_per_game=max_positions,
+            max_samples=max_samples,
+            symmetry_augmentation=symmetry_augmentation,
+            color_swap_augmentation=color_swap_augmentation,
+        )
     batch_size = int(os.environ.get("BATCH_SIZE", "1024"))
     epochs = int(os.environ.get("TRAINING_EPOCHS", "3"))
     dataloader = DataLoader(dataset, batch_size=batch_size)
