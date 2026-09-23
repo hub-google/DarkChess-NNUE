@@ -118,6 +118,74 @@ def extract_features(board, input_size=CURRENT_INPUT_SIZE):
         features[497] = min(float(board.repetition_count()) / 3.0, 1.0)
     return features
 
+
+BOARD_ROWS = 4
+BOARD_COLS = 8
+SYM_IDENTITY = 0
+SYM_LEFT_RIGHT = 1
+SYM_UP_DOWN = 2
+SYM_ROTATE_180 = 3
+SYMMETRY_COUNT = 4
+
+
+def transform_square(square, transform):
+    """Map a square through a symmetry of the 4x8 rectangle."""
+    row, col = divmod(int(square), BOARD_COLS)
+    if transform in (SYM_LEFT_RIGHT, SYM_ROTATE_180):
+        col = BOARD_COLS - 1 - col
+    if transform in (SYM_UP_DOWN, SYM_ROTATE_180):
+        row = BOARD_ROWS - 1 - row
+    return row * BOARD_COLS + col
+
+
+def augment_features(features, target, transform=SYM_IDENTITY, color_swap=False):
+    """
+    Apply an exact game symmetry without duplicating replay files.
+
+    Geometry keeps the Red-perspective target unchanged. Swapping Red/Black
+    piece identities also swaps side-to-move and negates the Red-perspective
+    value target.
+    """
+    transformed = np.zeros_like(features)
+
+    for square in range(32):
+        mapped = transform_square(square, transform)
+        src = square * 15
+        dst = mapped * 15
+        transformed[dst:dst + 15] = features[src:src + 15]
+
+    transformed[480:494] = features[480:494]
+    if len(features) > 494:
+        transformed[494:] = features[494:]
+
+    if color_swap:
+        for square in range(32):
+            base = square * 15
+            red_channels = transformed[base:base + 7].copy()
+            transformed[base:base + 7] = transformed[base + 7:base + 14]
+            transformed[base + 7:base + 14] = red_channels
+
+        red_counts = transformed[480:487].copy()
+        transformed[480:487] = transformed[487:494]
+        transformed[487:494] = red_counts
+
+        if len(transformed) >= CURRENT_INPUT_SIZE:
+            red_to_move = float(transformed[494])
+            transformed[494] = transformed[495]
+            transformed[495] = red_to_move
+
+        target = -float(target)
+
+    return transformed, float(target)
+
+
+def _env_enabled(name, default=True):
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class DarkChessDataset(IterableDataset):
     def __init__(
         self,
@@ -125,15 +193,20 @@ class DarkChessDataset(IterableDataset):
         input_size=CURRENT_INPUT_SIZE,
         max_positions_per_game=4,
         max_samples=2_000_000,
+        symmetry_augmentation=True,
+        color_swap_augmentation=True,
     ):
         self.files = files
         self.input_size = input_size
         self.max_positions_per_game = max_positions_per_game
         self.max_samples = max_samples
+        self.symmetry_augmentation = symmetry_augmentation
+        self.color_swap_augmentation = color_swap_augmentation
         
     def __iter__(self):
         files = list(self.files)
-        np.random.shuffle(files)
+        rng = np.random.default_rng()
+        rng.shuffle(files)
         yielded = 0
         for f in files:
             invalid_games = 0
@@ -192,6 +265,22 @@ class DarkChessDataset(IterableDataset):
                                             raise ValueError(f"invalid root value: {root_value}")
                                         target = 0.5 * res + 0.5 * root_value
                                     feat = extract_features(board, self.input_size)
+                                    transform = (
+                                        int(rng.integers(0, SYMMETRY_COUNT))
+                                        if self.symmetry_augmentation
+                                        else SYM_IDENTITY
+                                    )
+                                    color_swap = (
+                                        bool(rng.integers(0, 2))
+                                        if self.color_swap_augmentation
+                                        else False
+                                    )
+                                    feat, target = augment_features(
+                                        feat,
+                                        target,
+                                        transform=transform,
+                                        color_swap=color_swap,
+                                    )
                                     yield torch.tensor(feat), torch.tensor([target], dtype=torch.float32)
                                     yielded += 1
                                     if yielded >= self.max_samples:
@@ -241,11 +330,15 @@ def main():
             "replay window; lower MAX_POSITIONS_PER_GAME or raise "
             "MAX_TRAINING_SAMPLES."
         )
+    symmetry_augmentation = _env_enabled("SYMMETRY_AUGMENTATION", True)
+    color_swap_augmentation = _env_enabled("COLOR_SWAP_AUGMENTATION", True)
     dataset = DarkChessDataset(
         files,
         input_size=CURRENT_INPUT_SIZE,
         max_positions_per_game=max_positions,
         max_samples=max_samples,
+        symmetry_augmentation=symmetry_augmentation,
+        color_swap_augmentation=color_swap_augmentation,
     )
     batch_size = int(os.environ.get("BATCH_SIZE", "1024"))
     epochs = int(os.environ.get("TRAINING_EPOCHS", "3"))
@@ -253,7 +346,8 @@ def main():
     
     print(
         f"Hyperparameters: lr={learning_rate}, batch_size={batch_size}, "
-        f"epochs={epochs}"
+        f"epochs={epochs}, symmetry_augmentation={symmetry_augmentation}, "
+        f"color_swap_augmentation={color_swap_augmentation}"
     )
     print("Training loop ready.")
 

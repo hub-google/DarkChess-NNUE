@@ -74,6 +74,14 @@ def choose_search_depth(hidden_count):
     return 12
 
 
+def choose_opening_depth():
+    """
+    The fully hidden opening has little actionable information and only eight
+    geometric square classes. Spend the CPU budget later in the game.
+    """
+    return max(1, int(os.environ.get("OPENING_SEARCH_DEPTH", "1")))
+
+
 def play_game(evaluator, model_version, rng, temperature, explore_plies):
     game_started = time.perf_counter()
     board = DarkChessBoardPy()
@@ -93,7 +101,7 @@ def play_game(evaluator, model_version, rng, temperature, explore_plies):
     total_search_seconds = 0.0
     slowest_search = None
 
-    opening_depth = choose_search_depth(int(board.hidden_bitboard).bit_count())
+    opening_depth = choose_opening_depth()
     active_depth = opening_depth
     print(
         f"[Self-Play] Game started: id={record['id']} ply=1 hidden=32 "
@@ -211,7 +219,8 @@ def main():
 
     print(
         f"[Self-Play] Starting {num_batches} batches x {batch_size} games "
-        f"with seed {seed}; adaptive depths: hidden 24-32=3, 12-23=10, 0-11=12."
+        f"with seed {seed}; opening depth={choose_opening_depth()}, "
+        f"adaptive depths after first flip: hidden 24-31=3, 12-23=10, 0-11=12."
     )
     for _ in range(num_batches):
         run_batch(batch_size, output_dir, evaluator, model_version, rng)

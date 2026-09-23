@@ -62,6 +62,55 @@ def _ordered_moves(board, moves):
     return sorted((int(move) for move in moves), key=priority)
 
 
+BOARD_ROWS = 4
+BOARD_COLS = 8
+
+
+def _opening_square_orbit(square):
+    """Return the four geometric symmetries of a square on the 4x8 board."""
+    row, col = divmod(int(square), BOARD_COLS)
+    return tuple(sorted({
+        row * BOARD_COLS + col,
+        row * BOARD_COLS + (BOARD_COLS - 1 - col),
+        (BOARD_ROWS - 1 - row) * BOARD_COLS + col,
+        (BOARD_ROWS - 1 - row) * BOARD_COLS + (BOARD_COLS - 1 - col),
+    }))
+
+
+def _opening_symmetry_groups(moves):
+    """
+    Collapse the fully hidden opening from 32 flip squares to 8 geometric
+    equivalence classes. The true game value is invariant under horizontal/
+    vertical reflection and 180-degree rotation.
+    """
+    by_square = {}
+    for move in moves:
+        from_sq, to_sq, is_flip = decode_move(int(move))
+        if not is_flip or from_sq != to_sq:
+            return [[int(move)] for move in moves]
+        by_square[from_sq] = int(move)
+
+    groups = []
+    visited = set()
+    for square in sorted(by_square):
+        if square in visited:
+            continue
+        orbit = _opening_square_orbit(square)
+        group = [by_square[sq] for sq in orbit if sq in by_square]
+        visited.update(orbit)
+        groups.append(sorted(group))
+    return groups
+
+
+def _expand_group_values(groups, representative_values):
+    values = {}
+    for group in groups:
+        value = float(representative_values[group[0]])
+        for move in group:
+            values[move] = value
+    return values
+
+
 class ChanceSearch:
     """
     Alpha-beta decision search with exact public-probability chance nodes.
@@ -259,6 +308,8 @@ class ChanceSearch:
         if board.side_to_move != NONE:
             raise ValueError("analyze_first_flip requires the initial position")
         moves = _ordered_moves(board, board.generate_legal_moves())
+        move_groups = _opening_symmetry_groups(moves)
+        search_moves = [group[0] for group in move_groups]
         total = int(board.remaining_counts.sum())
         if self.max_depth == 1:
             if self.evaluator is material_evaluate:
@@ -284,7 +335,7 @@ class ChanceSearch:
 
             leaves = []
             metadata = []
-            for move in moves:
+            for move in search_moves:
                 for piece, count in enumerate(board.remaining_counts):
                     count = int(count)
                     if count <= 0:
@@ -297,9 +348,10 @@ class ChanceSearch:
 
             self.nodes = 0
             leaf_values = self._evaluate_leaf_boards(leaves)
-            values = {move: 0.0 for move in moves}
+            representative_values = {move: 0.0 for move in search_moves}
             for (move, weight), value in zip(metadata, leaf_values):
-                values[move] += weight * float(value)
+                representative_values[move] += weight * float(value)
+            values = _expand_group_values(move_groups, representative_values)
             best_move = max(moves, key=lambda move: values[move])
             return SearchResult(
                 best_move,
@@ -310,8 +362,8 @@ class ChanceSearch:
 
         self.nodes = 0
         self.cache.clear()
-        values = {}
-        for move in moves:
+        representative_values = {}
+        for move in search_moves:
             expected_utility = 0.0
             for piece, count in enumerate(board.remaining_counts):
                 count = int(count)
@@ -329,8 +381,9 @@ class ChanceSearch:
                     red_value if PIECE_COLOR[piece] == RED else -red_value
                 )
                 expected_utility += (count / total) * first_player_value
-            values[move] = float(np.clip(expected_utility, -1.0, 1.0))
+            representative_values[move] = float(np.clip(expected_utility, -1.0, 1.0))
 
+        values = _expand_group_values(move_groups, representative_values)
         best_move = max(moves, key=lambda move: values[move])
         return SearchResult(
             move=best_move,
