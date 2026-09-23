@@ -73,10 +73,21 @@ jobs:
           MAX_TRAINING_SAMPLES: "2000000"
         run: python -u src/training/train.py
 
-      # Early-development bootstrap policy: every successfully trained
-      # challenger becomes the next champion. Reintroduce SPRT gating once the
-      # model and replay buffer are mature enough for meaningful comparisons.
-      - name: Promote trained challenger
+      - name: Validate challenger against champion
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/training/sprt_validation.py \
+            --champion models/champion.nnue \
+            --challenger models/challenger.nnue \
+            --pairs 400 \
+            --depth 8 \
+            --node-budget 20000 \
+            --elo0 -15 \
+            --elo1 15
+
+      - name: Promote validated challenger
+        if: env.PASSED == 'true'
         run: |
           mv models/challenger.nnue models/champion.nnue
           python src/training/export_nnue.py \
@@ -86,6 +97,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add models/champion.nnue frontend/public/models/
           if ! git diff --staged --quiet; then
-            git commit -m "chore: promote trained NNUE champion"
+            git commit -m "chore: promote validated NNUE champion"
             git push
           fi
+
+      - name: Keep champion when challenger fails gate
+        if: env.PASSED != 'true'
+        run: echo "Challenger did not pass paired SPRT; existing champion is retained."
