@@ -101,6 +101,24 @@ def visible_piece_count(board):
     return sum(int(bb).bit_count() for bb in board.piece_bitboards)
 
 
+def _ordered_moves(board):
+    """Captures first; immediate forced wins can terminate exact minimax early."""
+    def priority(move):
+        to_sq = int(move) & 31
+        from_sq = (int(move) >> 5) & 31
+        is_flip = from_sq == to_sq
+        is_capture = (
+            not is_flip
+            and ((int(board.occupied_bitboard) >> to_sq) & 1)
+        )
+        return 0 if is_capture else 1
+
+    return sorted(
+        (int(move) for move in board.generate_legal_moves()),
+        key=priority,
+    )
+
+
 def _prefer(candidate, incumbent, side):
     if incumbent is None:
         return True
@@ -178,7 +196,7 @@ class EndgameTablebase:
             self.cache[key] = answer
             return answer
 
-        moves = [int(move) for move in board.generate_legal_moves()]
+        moves = _ordered_moves(board)
         if not moves:
             value = -1.0 if board.side_to_move == RED else 1.0
             answer = (value, 0)
@@ -194,6 +212,11 @@ class EndgameTablebase:
             candidate = (value, distance + 1)
             if _prefer(candidate, best, side):
                 best = candidate
+                if (
+                    (side == RED and best == (1.0, 1))
+                    or (side == BLACK and best == (-1.0, 1))
+                ):
+                    break
 
         self.cache[key] = best
         return best
@@ -221,7 +244,7 @@ class EndgameTablebase:
         side = int(board.side_to_move)
         best = None
         best_move = None
-        for move in [int(move) for move in board.generate_legal_moves()]:
+        for move in _ordered_moves(board):
             child = board.clone()
             child.make_move(move, validate=False)
             value, distance = self._solve(child)
@@ -229,6 +252,11 @@ class EndgameTablebase:
             if _prefer(candidate, best, side):
                 best = candidate
                 best_move = move
+                if (
+                    (side == RED and best == (1.0, 1))
+                    or (side == BLACK and best == (-1.0, 1))
+                ):
+                    break
 
         return TablebaseResult(
             value=float(best[0]),
