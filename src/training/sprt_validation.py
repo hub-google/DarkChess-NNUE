@@ -108,6 +108,10 @@ def set_action_result(passed):
     if github_env:
         with open(github_env, "a", encoding="utf-8") as handle:
             handle.write(f"PASSED={value}\n")
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a", encoding="utf-8") as handle:
+            handle.write(f"passed={value}\n")
 
 
 def main():
