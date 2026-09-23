@@ -186,6 +186,49 @@ def _env_enabled(name, default=True):
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def select_training_plies(game, moves, max_positions):
+    """
+    Reserve half the per-game sample budget for positions where search most
+    disagrees with the raw NNUE value; use deterministic random coverage for
+    the other half. Legacy replays without v keep the old random behavior.
+    """
+    eligible = np.arange(1, len(moves), dtype=np.int32)
+    if len(eligible) <= max_positions:
+        return eligible
+
+    seed = zlib.crc32(str(game["id"]).encode("utf-8"))
+    game_rng = np.random.default_rng(seed)
+    root_values = game.get("q")
+    static_values = game.get("v")
+
+    if (
+        isinstance(root_values, list)
+        and isinstance(static_values, list)
+        and len(root_values) == len(moves)
+        and len(static_values) == len(moves)
+    ):
+        hard_count = max(1, max_positions // 2)
+        ranked = sorted(
+            (int(ply) for ply in eligible),
+            key=lambda ply: abs(float(root_values[ply]) - float(static_values[ply])),
+            reverse=True,
+        )
+        hard = ranked[:hard_count]
+        hard_set = set(hard)
+        remaining = [int(ply) for ply in eligible if int(ply) not in hard_set]
+        random_count = max_positions - len(hard)
+        random_part = (
+            game_rng.choice(remaining, size=random_count, replace=False).tolist()
+            if random_count > 0
+            else []
+        )
+        return np.array(sorted(hard + random_part), dtype=np.int32)
+
+    return np.sort(
+        game_rng.choice(eligible, size=max_positions, replace=False)
+    ).astype(np.int32)
+
+
 class DarkChessDataset(IterableDataset):
     def __init__(
         self,
@@ -232,6 +275,9 @@ class DarkChessDataset(IterableDataset):
                             root_values = game.get('q')
                             if root_values is not None and len(root_values) != len(moves):
                                 raise ValueError("q and mov lengths differ")
+                            static_values = game.get('v')
+                            if static_values is not None and len(static_values) != len(moves):
+                                raise ValueError("v and mov lengths differ")
 
                             validation_board = DarkChessBoardPy(bag=game['hid'])
                             for move in moves:
@@ -243,15 +289,11 @@ class DarkChessDataset(IterableDataset):
                                     f"terminal state {(over, replay_result)}"
                                 )
 
-                            eligible = np.arange(1, len(moves), dtype=np.int32)
-                            if len(eligible) > self.max_positions_per_game:
-                                seed = zlib.crc32(str(game["id"]).encode("utf-8"))
-                                game_rng = np.random.default_rng(seed)
-                                eligible = game_rng.choice(
-                                    eligible,
-                                    size=self.max_positions_per_game,
-                                    replace=False,
-                                )
+                            eligible = select_training_plies(
+                                game,
+                                moves,
+                                self.max_positions_per_game,
+                            )
                             selected_plies = set(int(ply) for ply in eligible)
 
                             board = DarkChessBoardPy(bag=game['hid'])
