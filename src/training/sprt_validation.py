@@ -47,7 +47,7 @@ def score_for_color(red_result, color):
     return red_score if color == RED else 1.0 - red_score
 
 
-def play_game(first_evaluator, second_evaluator, bag, first_square, depth):
+def play_game(first_evaluator, second_evaluator, bag, first_square, depth, node_budget):
     """
     Play a game while keeping model identity attached to player order.
 
@@ -70,7 +70,11 @@ def play_game(first_evaluator, second_evaluator, bag, first_square, depth):
             return score_for_color(result, first_color)
 
         evaluator = evaluators[int(board.side_to_move)]
-        analysis = ChanceSearch(evaluator=evaluator, max_depth=depth).analyze(board)
+        analysis = ChanceSearch(
+            evaluator=evaluator,
+            max_depth=depth,
+            node_budget=node_budget,
+        ).analyze(board)
         board.make_move(analysis.move, validate=False)
 
     return 0.5
@@ -111,7 +115,8 @@ def main():
     parser.add_argument("--champion", required=True)
     parser.add_argument("--challenger", required=True)
     parser.add_argument("--pairs", type=int, default=200)
-    parser.add_argument("--depth", type=int, default=1)
+    parser.add_argument("--depth", type=int, default=8)
+    parser.add_argument("--node-budget", type=int, default=20000)
     parser.add_argument("--elo0", type=float, default=0.0)
     parser.add_argument("--elo1", type=float, default=15.0)
     parser.add_argument("--alpha", type=float, default=0.05)
@@ -124,19 +129,6 @@ def main():
     if not os.path.exists(args.challenger):
         raise FileNotFoundError(f"challenger not found: {args.challenger}")
 
-    # Early-development policy: producing a new generation takes priority over
-    # gating it.  Keep the SPRT implementation available, but require an
-    # explicit opt-in before it is allowed to block promotion.
-    sprt_required = os.environ.get("SPRT_REQUIRED", "false").lower() in {
-        "1", "true", "yes", "on"
-    }
-    if not sprt_required:
-        set_action_result(True)
-        print(
-            "SPRT skipped by early-development policy; "
-            "challenger is approved for unconditional promotion."
-        )
-        return
     if args.pairs <= 0:
         raise ValueError("--pairs must be positive")
     if not args.elo1 > args.elo0:
@@ -166,6 +158,7 @@ def main():
             bag,
             first_square,
             args.depth,
+            args.node_budget,
         )
         champion_first_score = play_game(
             champion,
@@ -173,6 +166,7 @@ def main():
             bag,
             first_square,
             args.depth,
+            args.node_budget,
         )
         pair_score = challenger_first_score + (1.0 - champion_first_score)
         challenger_points += pair_score
