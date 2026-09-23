@@ -20,6 +20,7 @@ class SearchResult:
     value: float
     move_values: dict
     nodes: int
+    depth: int = 0
 
 
 PIECE_VALUES = np.array(
@@ -50,14 +51,18 @@ def _is_flip(move):
     return from_sq == to_sq
 
 
-def _ordered_moves(board, moves):
+def _ordered_moves(board, moves, preferred=None):
     def priority(move):
-        from_sq, to_sq, is_flip = decode_move(int(move))
+        move = int(move)
+        from_sq, to_sq, is_flip = decode_move(move)
+        preferred_rank = 0 if preferred is not None and move == int(preferred) else 1
         if is_flip:
-            return 1
-        if (int(board.occupied_bitboard) >> to_sq) & 1:
-            return 0
-        return 2
+            tactical_rank = 1
+        elif (int(board.occupied_bitboard) >> to_sq) & 1:
+            tactical_rank = 0
+        else:
+            tactical_rank = 2
+        return preferred_rank, tactical_rank
 
     return sorted((int(move) for move in moves), key=priority)
 
@@ -111,37 +116,45 @@ def _expand_group_values(groups, representative_values):
     return values
 
 
+class SearchBudgetExceeded(RuntimeError):
+    pass
+
+
+TT_EXACT = 0
+TT_LOWER = 1
+TT_UPPER = 2
+
+
 class ChanceSearch:
-    """
-    Alpha-beta decision search with exact public-probability chance nodes.
+    """CPU-oriented expectiminimax with Star1 bounds, TT and node budgets."""
 
-    hidden_pieces is never read here. A flip branches over every piece type
-    whose public remaining count is non-zero and weights it by count / total.
-    Values are always from Red's perspective.
-    """
-
-    def __init__(self, evaluator=None, max_depth=2):
+    def __init__(self, evaluator=None, max_depth=2, node_budget=None):
         self.evaluator = evaluator or material_evaluate
         self.max_depth = max(1, int(max_depth))
+        self.node_budget = None if node_budget is None else max(1, int(node_budget))
         self.nodes = 0
         self.cache = {}
 
-    def _cache_key(self, board, depth):
+    def _cache_key(self, board):
         return (
             board.get_snapshot(),
             int(board.half_move_clock),
             tuple(board.history),
             tuple(board.chase_threats),
             board.pending_chase,
-            depth,
         )
+
+    def _tick(self, count=1):
+        self.nodes += int(count)
+        if self.node_budget is not None and self.nodes > self.node_budget:
+            raise SearchBudgetExceeded
 
     def _evaluate_leaf_boards(self, boards):
         values = np.zeros(len(boards), dtype=np.float64)
         pending_indices = []
         pending_boards = []
         for index, board in enumerate(boards):
-            self.nodes += 1
+            self._tick()
             over, result = board.is_game_over()
             if over:
                 values[index] = float(result)
@@ -162,7 +175,7 @@ class ChanceSearch:
     def _analyze_depth_one(self, board):
         moves = _ordered_moves(board, board.generate_legal_moves())
         leaves = []
-        leaf_metadata = []
+        metadata = []
         total = int(board.remaining_counts.sum())
         representative_flip = None
 
@@ -178,142 +191,193 @@ class ChanceSearch:
                     child = board.clone()
                     child.make_move(move, flip_piece=piece, validate=False)
                     leaves.append(child)
-                    leaf_metadata.append((move, count / total))
+                    metadata.append((move, count / total))
             else:
                 child = board.clone()
                 child.make_move(move, validate=False)
                 leaves.append(child)
-                leaf_metadata.append((move, 1.0))
+                metadata.append((move, 1.0))
 
-        self.nodes = 0
         leaf_values = self._evaluate_leaf_boards(leaves)
         values = {move: 0.0 for move in moves}
-        for (move, weight), value in zip(leaf_metadata, leaf_values):
+        for (move, weight), value in zip(metadata, leaf_values):
             values[move] += weight * float(value)
         if self.evaluator is material_evaluate and representative_flip is not None:
             for move in moves:
                 if _is_flip(move):
                     values[move] = values[representative_flip]
 
-        if board.side_to_move == RED:
-            best_move = max(moves, key=lambda move: values[move])
-        else:
-            best_move = min(moves, key=lambda move: values[move])
-        return SearchResult(best_move, float(values[best_move]), values, self.nodes)
+        best_move = (
+            max(moves, key=lambda move: values[move])
+            if board.side_to_move == RED
+            else min(moves, key=lambda move: values[move])
+        )
+        return SearchResult(best_move, float(values[best_move]), values, self.nodes, 1)
 
-    def _flip_value(self, board, move, depth):
+    def _flip_value(self, board, move, depth, alpha, beta):
         total = int(board.remaining_counts.sum())
         if total <= 0:
             raise ValueError("flip move generated with an empty bag")
 
+        outcomes = sorted(
+            (
+                (int(count), int(piece))
+                for piece, count in enumerate(board.remaining_counts)
+                if int(count) > 0
+            ),
+            reverse=True,
+        )
         expected = 0.0
-        for piece, count in enumerate(board.remaining_counts):
-            count = int(count)
-            if count <= 0:
-                continue
+        probability_done = 0.0
+
+        for count, piece in outcomes:
+            probability = count / total
             child = board.clone()
             child.make_move(move, flip_piece=piece, validate=False)
-            # Do not pass decision-node bounds through a chance node: doing so
-            # without Star1/Star2 bounds would be unsound.
             value = self._value(child, depth - 1, -math.inf, math.inf)
-            expected += (count / total) * value
-        return expected
+            expected += probability * value
+            probability_done += probability
+
+            remaining = max(0.0, 1.0 - probability_done)
+            lower = expected - remaining
+            upper = expected + remaining
+            if upper <= alpha:
+                return float(np.clip(upper, -1.0, 1.0))
+            if lower >= beta:
+                return float(np.clip(lower, -1.0, 1.0))
+
+        return float(np.clip(expected, -1.0, 1.0))
 
     def _move_value(self, board, move, depth, alpha, beta):
         if _is_flip(move):
-            return self._flip_value(board, move, depth)
+            return self._flip_value(board, move, depth, alpha, beta)
         child = board.clone()
         child.make_move(move, validate=False)
         return self._value(child, depth - 1, alpha, beta)
 
     def _value(self, board, depth, alpha, beta):
-        self.nodes += 1
+        self._tick()
         over, result = board.is_game_over()
         if over:
             return float(result)
         if depth <= 0:
             return float(np.clip(self.evaluator(board), -1.0, 1.0))
 
-        key = self._cache_key(board, depth)
+        key = self._cache_key(board)
+        alpha0, beta0 = alpha, beta
+        preferred = None
         cached = self.cache.get(key)
         if cached is not None:
-            return cached
+            cached_depth, cached_value, flag, preferred = cached
+            if cached_depth >= depth:
+                if flag == TT_EXACT:
+                    return cached_value
+                if flag == TT_LOWER:
+                    alpha = max(alpha, cached_value)
+                else:
+                    beta = min(beta, cached_value)
+                if alpha >= beta:
+                    return cached_value
 
-        moves = _ordered_moves(board, board.generate_legal_moves())
-        cutoff = False
+        moves = _ordered_moves(board, board.generate_legal_moves(), preferred=preferred)
+        best_move = None
         if board.side_to_move == RED:
             best = -math.inf
             for move in moves:
-                best = max(best, self._move_value(board, move, depth, alpha, beta))
+                value = self._move_value(board, move, depth, alpha, beta)
+                if value > best:
+                    best, best_move = value, move
                 alpha = max(alpha, best)
                 if alpha >= beta:
-                    cutoff = True
                     break
         elif board.side_to_move == BLACK:
             best = math.inf
             for move in moves:
-                best = min(best, self._move_value(board, move, depth, alpha, beta))
+                value = self._move_value(board, move, depth, alpha, beta)
+                if value < best:
+                    best, best_move = value, move
                 beta = min(beta, best)
                 if alpha >= beta:
-                    cutoff = True
                     break
         else:
             raise ValueError("search requires colors to be assigned by the first flip")
 
         best = float(np.clip(best, -1.0, 1.0))
-        if not cutoff:
-            self.cache[key] = best
+        flag = TT_EXACT
+        if best <= alpha0:
+            flag = TT_UPPER
+        elif best >= beta0:
+            flag = TT_LOWER
+        old = self.cache.get(key)
+        if old is None or depth >= old[0]:
+            self.cache[key] = (depth, best, flag, best_move)
         return best
 
-    def analyze(self, board):
-        if board.side_to_move == NONE:
-            raise ValueError("the first flip must be selected before search")
+    def _analyze_fixed(self, board, depth):
         moves = _ordered_moves(board, board.generate_legal_moves())
         if not moves:
             raise ValueError("cannot search a position with no legal moves")
-        if self.max_depth == 1:
+        if depth == 1:
             return self._analyze_depth_one(board)
 
-        self.nodes = 0
-        self.cache.clear()
         values = {}
         for move in moves:
-            values[move] = self._move_value(
-                board,
-                move,
-                self.max_depth,
-                -math.inf,
-                math.inf,
-            )
+            values[move] = self._move_value(board, move, depth, -math.inf, math.inf)
 
-        if board.side_to_move == RED:
-            best_move = max(moves, key=lambda move: values[move])
-        else:
-            best_move = min(moves, key=lambda move: values[move])
+        best_move = (
+            max(moves, key=lambda move: values[move])
+            if board.side_to_move == RED
+            else min(moves, key=lambda move: values[move])
+        )
         return SearchResult(
             move=best_move,
             value=float(values[best_move]),
             move_values=values,
             nodes=self.nodes,
+            depth=depth,
         )
 
-    def analyze_first_flip(self, board):
-        """
-        Evaluate the opening square from the first player's perspective.
+    def analyze(self, board):
+        if board.side_to_move == NONE:
+            raise ValueError("the first flip must be selected before search")
 
-        The revealed color becomes the first player's color, so a Red outcome
-        uses V and a Black outcome uses -V. This keeps the opening fair without
-        peeking at the actual piece under any square.
-        """
+        self.nodes = 0
+        self.cache.clear()
+        if self.node_budget is None:
+            return self._analyze_fixed(board, self.max_depth)
+
+        best_completed = None
+        for depth in range(1, self.max_depth + 1):
+            try:
+                best_completed = self._analyze_fixed(board, depth)
+            except SearchBudgetExceeded:
+                break
+
+        if best_completed is None:
+            saved_budget = self.node_budget
+            self.node_budget = None
+            self.nodes = 0
+            try:
+                best_completed = self._analyze_fixed(board, 1)
+            finally:
+                self.node_budget = saved_budget
+
+        best_completed.nodes = self.nodes
+        return best_completed
+
+    def analyze_first_flip(self, board):
         if board.side_to_move != NONE:
             raise ValueError("analyze_first_flip requires the initial position")
+        self.nodes = 0
+        self.cache.clear()
         moves = _ordered_moves(board, board.generate_legal_moves())
-        move_groups = _opening_symmetry_groups(moves)
-        search_moves = [group[0] for group in move_groups]
+        groups = _opening_symmetry_groups(moves)
+        search_moves = [group[0] for group in groups]
         total = int(board.remaining_counts.sum())
+
         if self.max_depth == 1:
             if self.evaluator is material_evaluate:
-                representative = moves[0]
+                representative = search_moves[0]
                 expected = 0.0
                 leaves = []
                 weights = []
@@ -326,12 +390,11 @@ class ChanceSearch:
                     sign = 1.0 if PIECE_COLOR[piece] == RED else -1.0
                     leaves.append(child)
                     weights.append(sign * count / total)
-                self.nodes = 0
-                leaf_values = self._evaluate_leaf_boards(leaves)
-                for weight, value in zip(weights, leaf_values):
+                values_array = self._evaluate_leaf_boards(leaves)
+                for weight, value in zip(weights, values_array):
                     expected += weight * float(value)
                 values = {move: float(expected) for move in moves}
-                return SearchResult(representative, float(expected), values, self.nodes)
+                return SearchResult(representative, float(expected), values, self.nodes, 1)
 
             leaves = []
             metadata = []
@@ -345,23 +408,14 @@ class ChanceSearch:
                     sign = 1.0 if PIECE_COLOR[piece] == RED else -1.0
                     leaves.append(child)
                     metadata.append((move, sign * count / total))
-
-            self.nodes = 0
             leaf_values = self._evaluate_leaf_boards(leaves)
             representative_values = {move: 0.0 for move in search_moves}
             for (move, weight), value in zip(metadata, leaf_values):
                 representative_values[move] += weight * float(value)
-            values = _expand_group_values(move_groups, representative_values)
+            values = _expand_group_values(groups, representative_values)
             best_move = max(moves, key=lambda move: values[move])
-            return SearchResult(
-                best_move,
-                float(values[best_move]),
-                values,
-                self.nodes,
-            )
+            return SearchResult(best_move, float(values[best_move]), values, self.nodes, 1)
 
-        self.nodes = 0
-        self.cache.clear()
         representative_values = {}
         for move in search_moves:
             expected_utility = 0.0
@@ -371,27 +425,20 @@ class ChanceSearch:
                     continue
                 child = board.clone()
                 child.make_move(move, flip_piece=piece, validate=False)
-                red_value = self._value(
-                    child,
-                    self.max_depth - 1,
-                    -math.inf,
-                    math.inf,
-                )
-                first_player_value = (
-                    red_value if PIECE_COLOR[piece] == RED else -red_value
-                )
+                red_value = self._value(child, self.max_depth - 1, -math.inf, math.inf)
+                first_player_value = red_value if PIECE_COLOR[piece] == RED else -red_value
                 expected_utility += (count / total) * first_player_value
             representative_values[move] = float(np.clip(expected_utility, -1.0, 1.0))
 
-        values = _expand_group_values(move_groups, representative_values)
+        values = _expand_group_values(groups, representative_values)
         best_move = max(moves, key=lambda move: values[move])
         return SearchResult(
-            move=best_move,
-            value=values[best_move],
-            move_values=values,
-            nodes=self.nodes,
+            best_move,
+            values[best_move],
+            values,
+            self.nodes,
+            self.max_depth,
         )
-
 
 def select_move(result, color, temperature=0.0, rng=None):
     if temperature <= 0 or len(result.move_values) == 1:
