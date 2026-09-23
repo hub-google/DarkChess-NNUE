@@ -72,6 +72,24 @@ class IncrementalNNUETests(unittest.TestCase):
         )
 
 
+    def test_default_hybrid_threshold_keeps_midgame_on_full_forward(self):
+        board = self.board
+        while int(board.hidden_bitboard).bit_count() > 12:
+            flips = [
+                int(move)
+                for move in board.generate_legal_moves()
+                if decode_move(int(move))[2]
+            ]
+            move = flips[0]
+            from_sq, _, _ = decode_move(move)
+            board.make_move(
+                move,
+                flip_piece=int(board.hidden_pieces[from_sq]),
+                validate=False,
+            )
+        self.assertEqual(int(board.hidden_bitboard).bit_count(), 12)
+        self.assertFalse(self.evaluator._use_incremental(board))
+
     def test_fully_revealed_position_uses_full_forward_fallback(self):
         board = self.board
         while int(board.hidden_bitboard) != 0:

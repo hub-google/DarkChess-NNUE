@@ -213,6 +213,21 @@ def summarize_search(rows, label):
     }
 
 
+def _run_complete_game(evaluator, label, config, budgets, seed):
+    np.random.seed(seed)
+    record, metrics = self_play.play_game(
+        evaluator,
+        label,
+        np.random.default_rng(seed),
+        temperature=0.0,
+        explore_plies=0,
+        collect_metrics=True,
+    )
+    metrics["plies"] = int(record["ply"])
+    metrics["result"] = float(record["res"])
+    return metrics
+
+
 def benchmark_complete_game(model, config):
     spec = config.get("throughput_game", {})
     env_keys = (
@@ -224,7 +239,7 @@ def benchmark_complete_game(model, config):
     old_env = {key: os.environ.get(key) for key in env_keys}
     budgets = spec.get(
         "node_budgets",
-        {"early": 1000, "mid": 3000, "late": 6000},
+        {"early": 500, "mid": 1000, "late": 2000},
     )
     os.environ["SEARCH_NODE_BUDGET_EARLY"] = str(budgets["early"])
     os.environ["SEARCH_NODE_BUDGET_MID"] = str(budgets["mid"])
@@ -232,36 +247,53 @@ def benchmark_complete_game(model, config):
     os.environ["OPENING_SEARCH_DEPTH"] = str(spec.get("opening_depth", 1))
     try:
         seed = int(config["seed"]) + 500
-        np.random.seed(seed)
-        evaluator = ModelEvaluator(model)
-        record, metrics = self_play.play_game(
-            evaluator,
-            "benchmark-current",
-            np.random.default_rng(seed),
-            temperature=0.0,
-            explore_plies=0,
-            collect_metrics=True,
+        full = _run_complete_game(
+            FullModelEvaluator(model),
+            "benchmark-full",
+            config,
+            budgets,
+            seed,
         )
-        metrics["plies"] = int(record["ply"])
-        metrics["result"] = float(record["res"])
-        metrics["node_budgets"] = {
-            "early": int(budgets["early"]),
-            "mid": int(budgets["mid"]),
-            "late": int(budgets["late"]),
+        hybrid = _run_complete_game(
+            ModelEvaluator(model),
+            "benchmark-hybrid",
+            config,
+            budgets,
+            seed,
+        )
+        result = {
+            "full": full,
+            "hybrid": hybrid,
+            "same_plies": full["plies"] == hybrid["plies"],
+            "same_result": full["result"] == hybrid["result"],
+            "games_per_hour_ratio": (
+                hybrid["games_per_hour"] / full["games_per_hour"]
+                if full["games_per_hour"]
+                else 0.0
+            ),
+            "average_move_seconds_ratio": (
+                hybrid["average_move_seconds"] / full["average_move_seconds"]
+                if full["average_move_seconds"]
+                else 0.0
+            ),
+            "node_budgets": {
+                "early": int(budgets["early"]),
+                "mid": int(budgets["mid"]),
+                "late": int(budgets["late"]),
+            },
+            "note": (
+                "Complete-game throughput compares full vs hybrid on the same "
+                "seed and reduced benchmark budgets. Production-budget speed "
+                "is measured separately on fixed early/mid/late positions."
+            ),
         }
-        metrics["note"] = (
-            "Complete-game throughput uses reduced benchmark budgets so it "
-            "finishes quickly; production-budget speed is measured separately "
-            "on fixed early/mid/late positions."
-        )
-        return metrics
+        return result
     finally:
         for key, value in old_env.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
-
 
 def main():
     torch.set_num_threads(1)

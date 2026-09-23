@@ -84,7 +84,7 @@ class ModelEvaluator:
         # batched full forward is faster than many tiny vector updates.
         self.incremental_min_hidden = max(
             0,
-            int(os.environ.get("NNUE_INCREMENTAL_MIN_HIDDEN", "1")),
+            int(os.environ.get("NNUE_INCREMENTAL_MIN_HIDDEN", "13")),
         )
 
     def _use_incremental(self, board):
