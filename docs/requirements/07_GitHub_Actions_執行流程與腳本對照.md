@@ -1,180 +1,222 @@
-# 07. GitHub Actions 執行流程與腳本對照 (Actions & Scripts Reference)
+# 07. GitHub Actions 執行流程與腳本對照
 
-本文件詳細記載 DarkChess (NNUE) 專案中，所有 **GitHub Actions 工作流 (.yml)** 的觸發時機、執行順序、涉及之**腳本檔 (.ts / .py)**、輸入輸出路徑以及外部雲端資料庫（Hugging Face / GitHub Repository）的交集處理細節。
+本文件以目前 `master` 內實際存在的 `.github/workflows/*.yml` 為準。**Self-play、training、Pages deploy、training-status publish 的自動排程／事件觸發目前都已依使用者要求註解，只保留手動啟動。** 不應從舊文件誤以為它們仍在背景自動跑。
+
+## 一、 目前有效的 Workflow
+
+| Workflow | 目前觸發方式 | 主要用途 |
+| --- | --- | --- |
+| `ci.yml` | push master / PR master / manual | Python unit tests |
+| `pipeline_smoke.yml` | 指定 training 相關檔案 push / manual | 完整跑 1 局 self-play → cache/reanalysis → tiny train → paired validation → export |
+| `benchmark.yml` | 指定搜尋/模型檔案 push / manual | CPU search benchmark，輸出 artifact |
+| `self_play.yml` | **manual only** | 15 個 CPU Worker 產生 replay 並上傳 HF staging |
+| `train.yml` | **manual only** | consolidate → cache/reanalysis → train → SPRT → promotion |
+| `deploy_pages.yml` | **manual only** | 前端測試、build、部署 GitHub Pages |
+| `publish_training_status.yml` | **manual only** | 從 HF 讀取安全統計並更新前端 training-status |
+| `reset_replay_data.yml` | **manual + confirmation** | 新規則版本時清除舊 replay/staging |
+
+`train.yml.bak` 只是備份檔，不是 GitHub Actions workflow。
 
 ---
 
-## 🧭 系統四大 GitHub Actions 工作流概覽
+## 二、 `self_play.yml`：分散式資料生成
 
-| Workflow 檔名 | 工作流名稱 | 觸發時機 | 主要任務與目標 |
-| :--- | :--- | :--- | :--- |
-| **`self_play.yml`** | ⚡ 分散式自我對弈數據生成 | 每 6 小時（或手動） | 啟動 15 台 Worker 以公開資訊機率搜尋進行對弈，產生對局上傳至 Hugging Face 暫存區 |
-| **`train.yml`** | 🤖 NNUE 自主訓練與評測流程 | 每日台灣時間 03:00（或手動） | 建立 cutoff 快照並融合 Hugging Face 數據 ➔ 訓練挑戰者模型 ➔ SPRT 對決 ➔ 晉升並 Push |
-| **`deploy_pages.yml`** | 🌐 部署暗棋網頁端至 GitHub Pages | 收到新 `models/champion.nnue` 時 | 自動編譯 TypeScript / WASM / Vite 並更新線上 GitHub Pages 網站 |
-| **`cleanup.yml`** | 🧹 清理 Hugging Face 散檔 | 手動觸發 (`workflow_dispatch`) | 一次性或手動清理 HF `staging` 目錄下過多的對局散檔，避免超出儲存限制 |
+### 現況
 
----
+- Trigger：`workflow_dispatch`
+- Matrix：`worker_id: 1..15`
+- Runner：`ubuntu-latest`
+- Python：3.10
+- PyTorch：CPU-only wheel
+- Job timeout：355 分鐘
+- 單次 generation budget：21,000 秒（5 小時 50 分）
 
-## 1️⃣ 工作流一：`self_play.yml` (數據生成)
+自動 `0 */6 * * *` cron 仍留在檔案註解中，**目前不會執行**。
 
-* **檔名路徑**：[`.github/workflows/self_play.yml`](file:///.github/workflows/self_play.yml)
-* **觸發條件**：Cron 定時執行 `0 */6 * * *`（每 6 小時）或 `workflow_dispatch`（手動觸發）。
-* **矩陣運算 (Matrix)**：開闢 15 個獨立 Runner 節點 (`worker_id`: 1 ~ 15)。
+### 執行流程
 
-### 📍 步驟與執行腳本明細：
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant W as Worker (1~15)
-    participant Py as src/workers/self_play.py
-    participant Upload as src/workers/upload_batch.py
-    participant HF as Hugging Face Datasets
-    
-    W->>Py: 執行 Python self_play.py
-    Py-->>W: 以 champion 或 bootstrap evaluator 產生 output_data/*.jsonl.gz
-    W->>Upload: 合併本地完整批次
-    Upload->>HF: HfApi().upload_file() 上傳至 staging/worker_${WORKER_ID}
-    W-->>W: 清空 output_data/ 避免磁爆
+```text
+GitHub runner (worker 1..15)
+  ↓
+src/workers/self_play.py
+  ↓ 完成一局就先落地 output_data/*.jsonl.gz
+src/workers/upload_batch.py
+  ↓ 合成 batch_*.jsonl.gz
+Hugging Face staging/worker_${WORKER_ID}/
 ```
 
-1. **環境建置 (Steps 1~5)**：
-   * 檢出專案碼、設定 Node.js 22 及 Python 3.10、執行 `npm install` 與 `pip install -r requirements.txt`。
-2. **對弈與上傳無窮迴圈 (Step 6)**：
-   * **環境變數**：`WORKER_ID=${matrix.worker_id}`, `HF_TOKEN`, `BATCH_SIZE=10`, `NUM_BATCHES=1`；workflow generation budget 為 `21000` 秒（5 小時 50 分）。
-   * **執行腳本 1**：`src/workers/self_play.py`
-     * **指令**：`python -u src/workers/self_play.py`
-   * **功能**：讀取現有 `models/champion.nnue`（若存在），以不讀取真實底牌的 chance-node 搜尋進行對戰；無 champion 時才使用公開資訊 material evaluator。
-     * **輸出路徑**：本地 `output_data/selfplay_worker_${WORKER_ID}_${timestamp}.jsonl.gz`
-   * **執行腳本 2（合併與上傳）**：
-     * **指令**：`python -u src/workers/upload_batch.py`
-     * **功能**：先將本地 `output_data/` 下的所有散檔合併為單一 `batch_${timestamp}.jsonl.gz` 壓縮檔，再傳送至 Hugging Face Datasets Repo [`hub-google/DarkChess-NNUE-Data`](https://huggingface.co/datasets/hub-google/DarkChess-NNUE-Data)。
-     * **HF 寫入目標**：`staging/worker_${WORKER_ID}/`
-     * **收尾**：刪除本地暫存檔。每個 Worker 每輪僅產生 1 個檔案，完全避免突破 10,000 個檔案上限與 API 限流。
+重要原則：
+
+- 搜尋不得偷讀 `hid` / `hidden_pieces`。
+- 完成的局先持久化，runner 接近截止時間時仍可把已完成資料上傳。
+- 目前正式 Worker 數固定 15；融合與 reset 腳本仍掃描 1~20，只為相容歷史 staging。
 
 ---
 
-## 2️⃣ 工作流二：`train.yml` (訓練、融合與評測)
+## 三、 `train.yml`：訓練與 Champion Gate
 
-* **檔名路徑**：[`.github/workflows/train.yml`](file:///.github/workflows/train.yml)
-* **觸發條件**：Cron 定時執行 `0 19 * * *`（每天 UTC 19:00 / 次日台灣時間 03:00）或 `workflow_dispatch`（手動觸發）。排程 run 永遠以該次 03:00 邊界為 cutoff，不因 GitHub 延遲送達而擴大資料範圍；手動 run 則以 job 實際開始時為 cutoff。
+### 現況
 
-### 📍 步驟與執行腳本明細：
+Trigger：`workflow_dispatch`。原本每日 UTC 19:00（台灣次日 03:00）的 cron 已註解，**目前不會每天自動訓練**。
 
-> **安全晉升原則**
-> 除首次尚無 champion 的 bootstrap 外，所有 challenger 都必須跨越配對 SPRT 的 H1 界線才可晉升。零資料、資料損壞、驗證未決或 H0 都不得覆蓋 champion。
+### 真實步驟
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Runner as GitHub Actions Runner
-    participant HF as Hugging Face Datasets
-    participant PyConsolidate as src/training/consolidate_buffer.py
-    participant PyTrain as src/training/train.py
-    participant PySPRT as src/training/sprt_validation.py
-    participant Git as GitHub Repo (master)
+1. Checkout + Python 3.10 + CPU-only PyTorch。
+2. 跑完整 Python unit tests。
+3. 設定 replay cutoff。
+4. 執行 `src/training/consolidate_buffer.py`。
+5. 從 HF 下載單一 `replay_buffer.jsonl.gz` 到 `datasets/`。
+6. 執行 `src/training/build_training_cache.py`：
+   - 產生 `training_cache/cache_*.npz`
+   - 建立 hard-position candidates
+   - 使用目前 champion 做小量 reanalysis
+   - 寫入 `reanalysis_overrides.npz`
+   - 寫入 `manifest.json`
+7. 執行 `src/training/train.py`，從 champion 續訓產生 `models/challenger.nnue`。
+8. 執行 `src/training/sprt_validation.py`：
+   - 最多 400 pairs
+   - depth 8
+   - node budget 20,000
+   - Elo bounds -15 / +15
+9. 僅在 validation 設定 `passed=true` 時：
+   - 封存舊 champion
+   - challenger → champion
+   - 保留近期 archive champions
+   - export 前端模型
+   - commit + push
+10. H0、未決或驗證失敗：保留既有 champion。
 
-    Runner->>HF: 列出 staging 並固定 cutoff 快照
-    Runner->>HF: 下載快照檔案與舊 buffer
-    Runner->>PyConsolidate: 執行 consolidate_buffer.py
-    PyConsolidate->>HF: 上傳單一 replay_buffer.jsonl.gz (上限50萬局)
-    PyConsolidate->>HF: 驗證後僅刪除本次快照檔案
-    Note over HF: cutoff 後的 self-play 檔案保留至下次訓練
-    Runner->>HF: 下載 datasets/replay_buffer.jsonl.gz
-    Runner->>PyTrain: 執行 train.py
-    PyTrain-->>Runner: 產出 models/challenger.nnue
-    Runner->>PySPRT: 執行 sprt_validation.py (--champion vs --challenger)
-    alt 挑戰者勝出 (PASSED=true)
-        Runner->>Git: mv challenger.nnue champion.nnue & git push
-    end
+### 資料並行安全
+
+Training 與 self-play 使用不同 concurrency group，可以同時執行。consolidation 只處理固定 cutoff 前的 staging snapshot；驗證新 replay buffer 成功後，也只刪除這次已納入的確切檔案，不會清掉較新的並行上傳。
+
+---
+
+## 四、 `pipeline_smoke.yml`：端到端小型驗收
+
+這是目前最重要的 pipeline 回歸測試。當 training 相關程式被 push 時會自動跑，亦可手動執行。
+
+流程：
+
+```text
+1 complete self-play game
+  ↓
+binary cache + small reanalysis
+  ↓
+1-epoch tiny challenger
+  ↓
+1-pair validation
+  ↓
+export champion.bin / champion.json
 ```
 
-| 順序 | 步驟名稱 | 執行指令 / 涉及腳本 | 輸入路徑 / 來源 | 輸出路徑 / 標的 | 目的與細節 |
-| :---: | :--- | :--- | :--- | :--- | :--- |
-| **1~5** | 環境建置 | `checkout`, `setup-python`, `setup-node` | 專案程式碼 | Python 3.10 & Node.js 22 | 準備 CI 執行環境 |
-| **6** | **融合 cutoff 快照並精確清理** | `python src/training/consolidate_buffer.py` | HF `staging/*` 中時間戳記 `<= cutoff` 的完整批次 | HF 根目錄 `replay_buffer.jsonl.gz` | 滑動窗口保留最新 50 萬局；重新下載驗證成功後，只刪除本次成功合併的確切檔案。較新或並行上傳的檔案留待下次訓練 |
-| **8** | 下載完整訓練集 | Python `hf_hub_download()` | HF `hub-google/DarkChess-NNUE-Data` | 本地 `datasets/replay_buffer.jsonl.gz` | 精確下載單一整合大檔至本地，防範 429 Too Many Requests 限流 |
-| **9** | **NNUE 模型訓練** | `python src/training/train.py` | `datasets/replay_buffer.jsonl.gz` + 現有 champion | `models/challenger.nnue` | 從 champion 續訓；目前預設 batch 1024、3 epochs，並混合最終勝負與自我對弈 root value |
-| **10** | **SPRT 棋力對決** | `python src/training/sprt_validation.py` | `models/champion.nnue` vs `models/challenger.nnue` | `$GITHUB_ENV` (設定 `PASSED=true/false`) | 使用相同底盤與相同首翻格的雙局配對，正確維持先後手模型身分並進行序貫檢定；未達 H1 一律不晉升 |
-| **11** | **模型晉升與 Push** | Shell bash & Git CLI | `models/challenger.nnue` | `models/champion.nnue` ➔ GitHub `master` Branch | 覆蓋衛冕者模型，`git commit` 並 `git push`。這會進一步觸發 `deploy_pages.yml` |
+它驗證的不只是單一函式，而是 replay 格式、board replay、cache、reanalysis、training、SPRT、export 之間能真正串起來。
 
 ---
 
-## 3️⃣ 工作流三：`deploy_pages.yml` (前端發布)
+## 五、 `benchmark.yml`：CPU 搜尋效能驗收
 
-* **檔名路徑**：[`.github/workflows/deploy_pages.yml`](file:///.github/workflows/deploy_pages.yml)
-* **觸發條件**：當 `master` 分支收到了 `models/champion.nnue` 更新（或 `frontend/` 原始碼變更）時**自動觸發**。
+觸發：
 
-### 📍 步驟與執行腳本明細：
+- 手動
+- 搜尋、NNUE、tablebase、self-play、benchmark config 或 champion 相關檔案 push 到 master
 
-1. **安裝相依套件**：`cd frontend && npm ci`
-2. **單元測試 (Vitest)**：`npm run test -- --run`（確保前端盤面邏輯與 WASM 介面無 bug）。
-3. **前端編譯 (Vite & WASM)**：`npm run build` 產出打包網頁檔至 `frontend/dist/`。
-4. **發布至 Pages**：呼叫 `actions/deploy-pages@v4` 將 `frontend/dist` 部署至 **GitHub Pages** 服務。
+執行 `benchmarks/search_benchmark.py`，測量：
 
----
+- NNUE 評估 throughput
+- 固定 early / mid / late position 的 search throughput
+- full-forward vs hybrid evaluator
+- 完整低預算 self-play game throughput
 
-## 4️⃣ 工作流四：`cleanup.yml` (手動清理)
-
-* **檔名路徑**：[`.github/workflows/cleanup.yml`](file:///.github/workflows/cleanup.yml)
-* **觸發條件**：僅限手動觸發 (`workflow_dispatch`)。
-* **執行時間限制**：60 分鐘。
-
-### 📍 步驟與執行腳本明細：
-
-1. **環境建置**：設定 Python 3.10 並安裝 `huggingface_hub`。
-2. **清理任務**：執行 `python src/workers/cleanup_hf_staging.py`。
-3. **目的**：作為備用方案，在自動融合機制 (consolidate) 發生異常或累積散檔過多時，提供維護者手動清理 Hugging Face Datasets `staging` 暫存區的手段。
+結果寫成 `benchmark_results.json` 並保留為 30 天 artifact。
 
 ---
 
-## ⏳ 執行時間分配與併發策略 (Execution Time Allocation)
+## 六、 `ci.yml`：Python correctness gate
 
-為充分利用 GitHub Actions 的免費額度並確保流程不中斷，系統對各工作流的執行時間進行了明確分配與限制：
+觸發：
 
-1. **`self_play.yml` (每 6 小時執行)**：
-   * **最大時長限制**：generation budget 設定為 `21000` 秒（**5 小時 50 分**），job timeout 為 355 分鐘。
-   * **策略目的**：在 GitHub Actions 單一 Job 六小時限制前停止新批次，保留兩分鐘上傳已完成棋局，並在每六小時週期間留下名義上的十分鐘窗口。
-2. **`train.yml` (每日台灣時間 03:00 執行)**：
-   * **執行時間**：依據資料量與 SPRT 對決的收斂速度，約需 1~3 小時不等。
-   * **併發特性**：使用 `nnue-training` concurrency group 只防止兩個 train 互相重疊；self-play 使用獨立的 `self-play` group。兩者可平行執行，train 僅處理固定 cutoff 快照並逐檔清理，不會刪除同時產生的新批次。
-3. **`deploy_pages.yml` (事件驅動)**：
-   * **執行時間**：幾分鐘內完成。
-   * **策略目的**：依賴於 `train.yml` 的成功執行與模型升級，確保只有經過 SPRT 驗證為更強的模型，才會觸發編譯與發布，不占用排程時間。
-4. **`cleanup.yml` (手動維護)**：
-   * **執行時間**：設定 `timeout-minutes: 60`。
-   * **策略目的**：純作為維護工具，不在日常自動化資源競爭內。
+- push master
+- pull request → master
+- manual
+
+執行：
+
+`python -m unittest discover -s test -p "test_*.py" -v`
+
+目前測試包含 board/search、hidden-information isolation、Star1 vs exact search、tablebase、training cache、reanalysis override、replay consolidation、symmetry augmentation、SPRT 等。
 
 ---
 
-## 🔄 完整資料與模型流向閉環 (Data & Model Flow Lifecycle)
+## 七、 前端與狀態 Workflow
 
+### `deploy_pages.yml`
+
+目前 **manual only**。
+
+執行：
+
+1. Node.js 22
+2. `npm ci`
+3. Vitest
+4. Vite build
+5. upload-pages-artifact
+6. deploy-pages
+
+舊的 push / workflow_run 自動觸發仍保留在註解內，但現在不會因 champion 更新自動部署。
+
+### `publish_training_status.yml`
+
+目前 **manual only**。讀取 HF Dataset 後，只把可公開的安全統計寫入 `frontend/public/training-status.json`，有變更才 commit。
+
+---
+
+## 八、 `reset_replay_data.yml`：規則版本切換工具
+
+只可手動執行，且必須輸入：
+
+`DELETE-OLD-RULESET-DATA`
+
+才會真正刪除：
+
+- `replay_buffer.jsonl.gz`
+- `staging/worker_1..20`
+- `staging/fresh`
+
+它是破壞性維護工具，不屬於日常 training loop。
+
+---
+
+## 九、 目前資料與模型閉環
+
+```text
+[self_play.yml — manual, 15 CPU workers]
+        ↓
+[HF staging/worker_*]
+        ↓
+[train.yml — manual]
+        ↓
+consolidate_buffer.py
+        ↓
+HF replay_buffer.jsonl.gz  (raw source of truth)
+        ↓
+build_training_cache.py
+        ↓
+training_cache/*.npz + reanalysis_overrides.npz
+        ↓
+train.py
+        ↓
+models/challenger.nnue
+        ↓
+paired SPRT
+   ├─ fail / undecided → keep champion
+   └─ ACCEPT_H1
+        ↓
+archive old champion
+        ↓
+models/champion.nnue
+        ↓
+export frontend model
 ```
-[分散式 Worker (self_play.yml)]
-      │
-      │ 產生對局散檔 (.jsonl.gz)
-      ▼
-[Hugging Face Datasets: staging/*]
-      │
-      │ consolidate_buffer.py 以 03:00 cutoff 建立快照
-      ├─► (1) 只下載 cutoff 前的完整批次
-      ├─► (2) 記憶體內只保留最新 50 萬局
-      ├─► (3) 上傳並重新下載驗證 replay_buffer.jsonl.gz
-      └─► (4) 只刪除已成功納入的快照檔案；較新檔案保留
-      │
-      ▼
-[train.py (train.yml)]
-      │
-      │ 訓練產出 models/challenger.nnue
-      ▼
-[sprt_validation.py (最多 200 組雙局配對)]
-      │
-      ├─► 敗：捨棄 challenger.nnue，結束本次流程
-      └─► 勝：覆蓋升格為 models/champion.nnue ➔ git push 至 GitHub master
-               │
-               ▼
-   [deploy_pages.yml 自動觸發]
-               │
-               ▼
-   [GitHub Pages 更新上線 + 下一輪 Worker 取得最新 champion.nnue]
-```
+
+目前不應把這張圖理解成「背景會自動一直跑」；生產 self-play / train / deploy / status publish 都需要手動啟動，只有 CI、pipeline smoke 與 benchmark 依各自 push 條件自動執行。
