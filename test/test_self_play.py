@@ -88,6 +88,45 @@ class SearchPolicyTests(unittest.TestCase):
 
 
 @unittest.skipIf(self_play is None, "torch is not installed in this test environment")
+class GuidedExplorationTests(unittest.TestCase):
+    def test_no_prior_uses_existing_search_policy(self):
+        from search import SearchResult
+        from board import DarkChessBoardPy
+        board = DarkChessBoardPy()
+        board.make_move(0, validate=True)
+        moves = [int(m) for m in board.generate_legal_moves()]
+        result = SearchResult(moves[0], 0.0, {move: 0.0 for move in moves}, 100, 2)
+        pick = self_play.select_exploratory_move(
+            result, board, 0.6, np.random.default_rng(23),
+            policy_model=None, mix=0.15,
+        )
+        self.assertIn(pick, moves)
+
+    def test_neural_prior_masked_to_legal_moves(self):
+        import torch
+        from search import SearchResult
+        from board import DarkChessBoardPy
+        board = DarkChessBoardPy()
+        board.make_move(0, validate=True)
+        moves = [int(m) for m in board.generate_legal_moves()]
+        self.assertGreater(len(moves), 1)
+        result = SearchResult(moves[0], 0.0, {move: 0.0 for move in moves}, 100, 2)
+
+        class DummyPolicy:
+            def __call__(self, tensor):
+                logits = torch.full((1, 1024), -100.0)
+                logits[0, moves[-1]] = 100
+                logits[0, 1023] = 1000  # irrelevant illegal move
+                return logits
+
+        pick = self_play.select_exploratory_move(
+            result, board, 0.6, np.random.default_rng(24),
+            policy_model=DummyPolicy(), mix=1.0,
+        )
+        self.assertEqual(pick, moves[-1])
+
+
+@unittest.skipIf(self_play is None, "torch is not installed in this test environment")
 class IncrementalPersistenceTests(unittest.TestCase):
     def test_saves_each_game_before_starting_the_next_one(self):
         games = [

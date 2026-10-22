@@ -11,8 +11,7 @@ def merge_and_upload():
     output_dir = 'output_data'
     files = sorted(glob.glob(os.path.join(output_dir, '*.jsonl.gz')))
     if not files:
-        print("No files to upload.")
-        return
+        raise RuntimeError("No completed games to upload; failing worker rather than reporting false success.")
 
     # 1. Merge all local .jsonl.gz files into a single consolidated file
     merged_lines = []
@@ -26,8 +25,7 @@ def merge_and_upload():
             print(f"Warning: skipping corrupted file {f}: {e}")
 
     if not merged_lines:
-        print("No valid game records found after merging.")
-        return
+        raise RuntimeError("No valid completed game records found for upload.")
 
     print(f"Merged {len(merged_lines)} game records from {len(files)} files.")
 

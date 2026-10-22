@@ -51,7 +51,8 @@ Hugging Face staging/worker_${WORKER_ID}/
 重要原則：
 
 - 搜尋不得偷讀 `hid` / `hidden_pieces`。
-- 完成的局先持久化，runner 接近截止時間時仍可把已完成資料上傳。
+- 完成的局先持久化，runner 接近截止時間時仍可把已完成資料上傳；**零完成／零有效棋譜則上傳步驟必須報錯，整個 Worker 應為失敗**，不得假成功。
+- 有經晉升的 `models/champion.policy` 時，可在探索步將 15% 已遮罩合法走法的 Policy prior 與 Star1 搜尋策略混合；沒有 checkpoint 時保留原本搜尋策略。
 - 目前正式 Worker 數固定 15；融合與 reset 腳本仍掃描 1~20，只為相容歷史 staging。
 
 ---
@@ -108,6 +109,8 @@ Training 與 self-play 使用不同 concurrency group，可以同時執行。con
 binary cache + small reanalysis
   ↓
 1-epoch tiny Value challenger + optional Policy challenger
+  ↓
+1 policy-guided complete self-play game + strict terminal check
   ↓
 1-pair validation
   ↓

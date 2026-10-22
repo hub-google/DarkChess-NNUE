@@ -24,7 +24,8 @@ from search import (  # noqa: E402
     select_move,
 )
 from nnue_eval import ModelEvaluator  # noqa: E402
-from train import load_model_file  # noqa: E402
+from train import load_model_file, extract_features  # noqa: E402
+from policy_train import PolicyNet  # noqa: E402
 
 SLOW_SEARCH_SECONDS = 300
 
@@ -140,6 +141,52 @@ def per_move_seconds():
     return max(0.05, float(os.environ.get("SEARCH_MAX_SECONDS", "3.0")))
 
 
+def load_policy_model(path=None):
+    """Load only a previously promoted policy; never use a challenger by default."""
+    model_path = Path(path or os.environ.get("POLICY_PATH", str(PROJECT_ROOT / "models" / "champion.policy")))
+    if not model_path.exists():
+        print("[Self-Play] No promoted policy model; using search-only exploration.")
+        return None
+    data = torch.load(model_path, weights_only=True, map_location="cpu")
+    if data.get("input_size") != 498 or data.get("action_size") != 1024:
+        raise ValueError("incompatible policy checkpoint")
+    model = PolicyNet()
+    model.load_state_dict(data["state_dict"])
+    model.eval()
+    print(f"[Self-Play] Loaded policy prior: {model_path}")
+    return model
+
+
+def select_exploratory_move(analysis, board, temperature, rng, policy_model=None, mix=0.0):
+    """Blend a search teacher with a legal-action-masked neural prior.
+
+    Only used for exploratory self-play, not adjudication or champion SPRT.
+    The search teacher remains the q label and source of improvement.
+    """
+    if (
+        policy_model is None or mix <= 0 or temperature <= 0
+        or analysis.depth <= 0 or not analysis.move_values
+    ):
+        return select_move(analysis, board.side_to_move, temperature=temperature, rng=rng)
+    moves = np.asarray(list(analysis.move_values), dtype=np.int64)
+    sign = 1.0 if int(board.side_to_move) == 0 else -1.0
+    values = np.asarray([analysis.move_values[int(m)] for m in moves], dtype=np.float64)
+    search_logits = sign * values / max(temperature, 1e-6)
+    search_probs = np.exp(search_logits - search_logits.max())
+    search_probs /= search_probs.sum()
+    with torch.no_grad():
+        inputs = torch.from_numpy(extract_features(board)).unsqueeze(0)
+        logits = policy_model(inputs).squeeze(0).cpu().numpy()[moves]
+    # Only consider actual legal moves from the search (never the other 1024 IDs).
+    logits = logits.astype(np.float64)
+    prior = np.exp(logits - logits.max())
+    prior /= prior.sum()
+    weight = max(0.0, min(1.0, float(mix)))
+    combined = (1.0 - weight) * search_probs + weight * prior
+    combined /= combined.sum()
+    return int(rng.choice(moves, p=combined))
+
+
 def choose_opening_depth():
     """
     The fully hidden opening has little actionable information and only eight
@@ -157,6 +204,8 @@ def play_game(
     opponent_evaluator=None,
     opponent_model_version=None,
     collect_metrics=False,
+    policy_model=None,
+    policy_prior_mix=0.0,
 ):
     game_started = time.perf_counter()
     board = DarkChessBoardPy()
@@ -275,11 +324,9 @@ def play_game(
         current_temperature = (
             temperature if record["ply"] < explore_plies else 0.0
         )
-        chosen = select_move(
-            analysis,
-            board.side_to_move,
-            temperature=current_temperature,
-            rng=rng,
+        chosen = select_exploratory_move(
+            analysis, board, current_temperature, rng,
+            policy_model=policy_model, mix=policy_prior_mix,
         )
         record["mov"].append(int(chosen))
         record["q"].append(float(analysis.move_values[chosen]))
@@ -348,8 +395,10 @@ def run_batch(
     model_version,
     rng,
     opponent_pool=None,
+    policy_model=None,
 ):
     temperature = float(os.environ.get("SELF_PLAY_TEMPERATURE", "0.8"))
+    policy_prior_mix = float(os.environ.get("POLICY_PRIOR_MIX", "0.15"))
     explore_plies = int(os.environ.get("EXPLORE_PLIES", "20"))
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -368,6 +417,8 @@ def run_batch(
             explore_plies,
             opponent_evaluator=opponent[0],
             opponent_model_version=opponent[1],
+            policy_model=policy_model,
+            policy_prior_mix=policy_prior_mix,
         )
         output_path = output_dir / f"data_{int(time.time() * 1000)}_{game['id']}.jsonl.gz"
         with gzip.open(output_path, "wt", encoding="utf-8") as handle:
@@ -382,6 +433,7 @@ def main():
     seed = int(os.environ.get("SELF_PLAY_SEED", str(time.time_ns() % (2**32))))
     rng = np.random.default_rng(seed)
     (evaluator, model_version), opponent_pool = load_evaluator_pool()
+    policy_model = load_policy_model()
 
     print(
         f"[Self-Play] Starting {num_batches} batches x {batch_size} games "
@@ -396,6 +448,7 @@ def main():
             model_version,
             rng,
             opponent_pool=opponent_pool,
+            policy_model=policy_model,
         )
 
 

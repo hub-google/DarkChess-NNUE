@@ -46,6 +46,7 @@ jobs:
           SELF_PLAY_TEMPERATURE: "0.8"
           EXPLORE_PLIES: "20"
           SEARCH_MAX_SECONDS: "3.0"
+          POLICY_PRIOR_MIX: "0.15"
           OPENING_SEARCH_DEPTH: "1"
           SEARCH_NODE_BUDGET_EARLY: "500"
           SEARCH_NODE_BUDGET_MID: "1200"

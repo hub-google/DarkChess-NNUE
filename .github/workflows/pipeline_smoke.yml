@@ -80,6 +80,24 @@ jobs:
             --max-samples 16
           test -s models/challenger.policy
 
+      - name: Run one policy-guided self-play game
+        env:
+          BATCH_SIZE: "1"
+          NUM_BATCHES: "1"
+          OUTPUT_DIR: "policy_output"
+          SELF_PLAY_SEED: "20261023"
+          SEARCH_MAX_SECONDS: "2.0"
+          SEARCH_NODE_BUDGET_EARLY: "200"
+          SEARCH_NODE_BUDGET_MID: "500"
+          SEARCH_NODE_BUDGET_LATE: "1000"
+          OPENING_SEARCH_DEPTH: "1"
+          POLICY_PATH: "models/challenger.policy"
+          POLICY_PRIOR_MIX: "0.2"
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/workers/self_play.py
+          python -u src/training/validate_replay.py --directory policy_output --min-games 1
+
       - name: Run a minimal paired validation
         env:
           TORCH_NUM_THREADS: "1"
