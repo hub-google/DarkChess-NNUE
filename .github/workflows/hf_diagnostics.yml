@@ -1,0 +1,23 @@
+name: Hugging Face dataset diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/hf_diagnostics.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install huggingface_hub
+      - name: Read-only token and dataset accessibility diagnosis
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/training/hf_diagnostics.py
