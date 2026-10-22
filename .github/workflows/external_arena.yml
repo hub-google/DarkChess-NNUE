@@ -1,0 +1,52 @@
+name: External MistyBanqi paired CPU tournament
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "src/training/external_arena.py"
+      - "src/training/misty_uci.py"
+      - "test/test_misty_uci.py"
+      - ".github/workflows/external_arena.yml"
+
+jobs:
+  external-opponent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU evaluation requirements
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Test UCI adapter and public-information privacy
+        run: python -m unittest discover -s test -p "test_*.py" -v
+      - name: Fetch pinned independently developed Rust opponent
+        run: |
+          git clone --filter=blob:none https://github.com/brianhliou/misty-banqi.git /tmp/misty-banqi
+          git -C /tmp/misty-banqi checkout 9f7fbe849f5d4a2b3358b1b18a31a2cf1bfdcc5c
+      - name: Build native Rust external engine
+        run: cargo build --release -p banqi-engine --manifest-path /tmp/misty-banqi/Cargo.toml
+      - name: Paired games against native MistyBanqi
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/training/external_arena.py \
+            --misty /tmp/misty-banqi/target/release/banqi-engine \
+            --champion models/champion.nnue \
+            --pairs 2 \
+            --node-budget 400 \
+            --max-seconds 0.15
+      - name: Preserve independently evaluated game results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: misty-external-arena-${{ github.sha }}
+          path: external_arena_results.json
+          if-no-files-found: warn
+          retention-days: 30

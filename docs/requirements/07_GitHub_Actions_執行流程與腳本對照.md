@@ -243,3 +243,4 @@ export frontend model
 - `train_after_self_play.yml`：只有 `self_play.yml` 成功完成時，才透過 `workflow_dispatch` 啟動正式 `train.yml`。一個生產 Self-play 工作不成功，就不會自動訓練。
 - `train.yml`：consolidate 後檢查 `training_cache/manifest.json` 至少 1,000 局有效終局才開始 Value/Policy 訓練。SPRT 改用每步 0.25 秒、200 pairs、depth 6、1,200 節點預算；未通過 H1 不晉升。
 - 所有驗收／啟動都只代表 GitHub Actions 真正啟動或完成，不能當作棋力變強的證明；正式勝負需根據可回溯的配對結果。
+- `external_arena.yml`：Rust/MIT MistyBanqi 固定版本的獨立引擎；在 GitHub CPU 編譯，以 UCI 公共盤面和本專案 Champion 同底牌交換先後配對對弈，驗收合法走法及可重現結果，並保留 JSON artifact。

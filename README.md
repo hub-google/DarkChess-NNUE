@@ -50,3 +50,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 ## 網頁端機率搜尋（2026-10-22）
 
 `frontend/src/engine/search.ts` 提供以公開盤面估值的 CPU 受限 Star1-style 翻牌機率搜尋，可結合瀏覽器 NNUE；`App.tsx` 已改為使用 `chooseSearchedMove`，不再使用原本只有簡化走法選擇／隨機翻棋的 UI 策略。JS 搜尋與 Python 的完整 Transposition Table、增量 NNUE、Tablebase **並非完全同一核心**，棋力尚須獨立對戰驗證。正式 NNUE+Policy 訓練仍以 Python 實作為準。
+
+## 外部開源引擎對戰
+
+`external_arena.yml` 會抓取固定 commit `9f7fbe849f5d4a2b3358b1b18a31a2cf1bfdcc5c` 的 [MistyBanqi](https://github.com/brianhliou/misty-banqi) MIT 授權 Rust 引擎，編譯為原生 UCI binary，再以兩局同樣隱藏底牌、交換玩家順序的配對比賽測試 NNUE Champion。這是獨立引擎，跟只對戰自身或 material baseline 不同。公共 FEN 不傳任何真實暗牌，並以 `searchmoves` 強制當局合法根動作。MistyBanqi 與本專案長追、和棋實作仍可能不完全相同，若 UCI 回傳非法動作，測試將**失敗而不是悄悄變更棋規**。兩對／四局為端到端 smoke，不是 Elo 信賴區間，也不是世界第一證據。
