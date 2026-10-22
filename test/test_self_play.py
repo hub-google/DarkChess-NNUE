@@ -77,6 +77,17 @@ class OpponentPoolTests(unittest.TestCase):
 
 
 @unittest.skipIf(self_play is None, "torch is not installed in this test environment")
+class SearchPolicyTests(unittest.TestCase):
+    def test_teacher_distribution_uses_current_players_perspective(self):
+        red = self_play.search_policy({10: 0.8, 20: -0.8}, side=0)
+        black = self_play.search_policy({10: 0.8, 20: -0.8}, side=1)
+        self.assertEqual(red[0][0], 10)
+        self.assertEqual(black[0][0], 20)
+        self.assertAlmostEqual(sum(row[1] for row in red), 1)
+        self.assertAlmostEqual(sum(row[1] for row in black), 1)
+
+
+@unittest.skipIf(self_play is None, "torch is not installed in this test environment")
 class IncrementalPersistenceTests(unittest.TestCase):
     def test_saves_each_game_before_starting_the_next_one(self):
         games = [

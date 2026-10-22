@@ -1,0 +1,50 @@
+name: CPU self-play real game trial
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "src/workers/self_play.py"
+      - "src/training/search.py"
+      - "src/training/policy_targets.py"
+      - ".github/workflows/self_play_trial.yml"
+
+jobs:
+  actual-games:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Generate two complete real games with production-safe budgets
+        env:
+          BATCH_SIZE: "2"
+          NUM_BATCHES: "1"
+          OUTPUT_DIR: "output_data"
+          SELF_PLAY_SEED: "20261022"
+          SEARCH_MAX_SECONDS: "3.0"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          OPENING_SEARCH_DEPTH: "1"
+          TORCH_NUM_THREADS: "1"
+        run: python -u src/workers/self_play.py
+      - name: Validate real game outcomes and teacher records
+        run: python -u src/training/validate_replay.py --directory output_data --min-games 2
+      - name: Upload example game records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-selfplay-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 7

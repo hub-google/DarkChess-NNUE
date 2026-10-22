@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import math
+import time
 import numpy as np
 
 from board import (
@@ -128,10 +129,12 @@ TT_UPPER = 2
 class ChanceSearch:
     """CPU-oriented expectiminimax with Star1 bounds, TT and node budgets."""
 
-    def __init__(self, evaluator=None, max_depth=2, node_budget=None):
+    def __init__(self, evaluator=None, max_depth=2, node_budget=None, max_seconds=None):
         self.evaluator = evaluator or material_evaluate
         self.max_depth = max(1, int(max_depth))
         self.node_budget = None if node_budget is None else max(1, int(node_budget))
+        self.max_seconds = None if max_seconds is None else max(0.001, float(max_seconds))
+        self._deadline = None
         self.nodes = 0
         self.cache = {}
         self.chance_cutoffs = 0
@@ -155,6 +158,9 @@ class ChanceSearch:
         self.nodes += int(count)
         if self.node_budget is not None and self.nodes > self.node_budget:
             raise SearchBudgetExceeded
+        if self._deadline is not None and self.nodes % 32 == 0:
+            if time.perf_counter() >= self._deadline:
+                raise SearchBudgetExceeded
 
     def _bind_evaluator(self, board):
         binder = getattr(self.evaluator, "for_position", None)
@@ -374,6 +380,28 @@ class ChanceSearch:
             depth=depth,
         )
 
+    def _bounded_fallback(self, board):
+        """Public-state-only legal move fallback; never removes the budget.
+
+        A search which cannot finish depth one must still return a bounded
+        legal action instead of accidentally exploring millions of nodes.
+        Depth zero is recorded so its heuristic label is not used as a teacher.
+        """
+        moves = _ordered_moves(board, board.generate_legal_moves())
+        if not moves:
+            raise ValueError("cannot search a position with no legal moves")
+        values = {}
+        for move in moves:
+            if _is_flip(move):
+                # Do not inspect the referee's hidden piece mapping.
+                values[move] = float(material_evaluate(board))
+            else:
+                child = board.clone()
+                child.make_move(move, validate=False)
+                values[move] = float(material_evaluate(child))
+        best = max(moves, key=values.get) if board.side_to_move == RED else min(moves, key=values.get)
+        return SearchResult(best, values[best], values, self.nodes, 0)
+
     def analyze(self, board):
         if board.side_to_move == NONE:
             raise ValueError("the first flip must be selected before search")
@@ -382,27 +410,26 @@ class ChanceSearch:
         self.chance_cutoffs = 0
         self.cache.clear()
         self._bind_evaluator(board)
-        if self.node_budget is None:
-            return self._analyze_fixed(board, self.max_depth)
+        self._deadline = (time.perf_counter() + self.max_seconds) if self.max_seconds is not None else None
+        try:
+            if self.node_budget is None and self._deadline is None:
+                return self._analyze_fixed(board, self.max_depth)
 
-        best_completed = None
-        for depth in range(1, self.max_depth + 1):
-            try:
-                best_completed = self._analyze_fixed(board, depth)
-            except SearchBudgetExceeded:
-                break
+            best_completed = None
+            for depth in range(1, self.max_depth + 1):
+                try:
+                    if self._deadline is not None and time.perf_counter() >= self._deadline:
+                        break
+                    best_completed = self._analyze_fixed(board, depth)
+                except SearchBudgetExceeded:
+                    break
 
-        if best_completed is None:
-            saved_budget = self.node_budget
-            self.node_budget = None
-            self.nodes = 0
-            try:
-                best_completed = self._analyze_fixed(board, 1)
-            finally:
-                self.node_budget = saved_budget
-
-        best_completed.nodes = self.nodes
-        return best_completed
+            if best_completed is None:
+                return self._bounded_fallback(board)
+            best_completed.nodes = self.nodes
+            return best_completed
+        finally:
+            self._deadline = None
 
     def analyze_first_flip(self, board):
         if board.side_to_move != NONE:

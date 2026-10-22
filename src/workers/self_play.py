@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import math
 import sys
 import time
 import uuid
@@ -106,11 +107,37 @@ def choose_search_depth(hidden_count):
 
 
 def choose_node_budget(hidden_count):
+    """CPU-safe defaults. Increase only after full-game benchmarks succeed."""
     if hidden_count >= 24:
-        return int(os.environ.get("SEARCH_NODE_BUDGET_EARLY", "12000"))
+        return int(os.environ.get("SEARCH_NODE_BUDGET_EARLY", "500"))
     if hidden_count >= 12:
-        return int(os.environ.get("SEARCH_NODE_BUDGET_MID", "50000"))
-    return int(os.environ.get("SEARCH_NODE_BUDGET_LATE", "120000"))
+        return int(os.environ.get("SEARCH_NODE_BUDGET_MID", "1200"))
+    return int(os.environ.get("SEARCH_NODE_BUDGET_LATE", "2500"))
+
+
+def search_policy(move_values, side, temperature=0.25, max_actions=16):
+    """Top-K soft search policy, from *public-state* root search scores.
+
+    This is a teacher distribution, NOT a neural policy head or MCTS counts.
+    Each compact [move, probability] row sums to 1 after truncation.
+    """
+    items = list(move_values.items())
+    if not items:
+        return []
+    if side not in (0, 1):
+        return []
+    sign = 1.0 if side == 0 else -1.0
+    ranked = sorted(items, key=lambda row: (-sign * float(row[1]), int(row[0])))
+    ranked = ranked[:max(1, int(max_actions))]
+    logits = [sign * float(value) / max(0.01, float(temperature)) for _, value in ranked]
+    offset = max(logits)
+    weights = [math.exp(value - offset) for value in logits]
+    total = sum(weights)
+    return [[int(row[0]), float(weight / total)] for row, weight in zip(ranked, weights)]
+
+
+def per_move_seconds():
+    return max(0.05, float(os.environ.get("SEARCH_MAX_SECONDS", "3.0")))
 
 
 def choose_opening_depth():
@@ -144,6 +171,8 @@ def play_game(
         "mov": [],
         "q": [],
         "v": [],
+        "qd": [],  # completed search depth; zero means heuristic fallback
+        "pi": [],  # sparse search-teacher policy, [] when no trained-search label
         "res": 0.0,
         "ply": 0,
     }
@@ -178,6 +207,8 @@ def play_game(
     record["mov"].append(first_move)
     record["q"].append(float(opening.move_values[first_move]))
     record["v"].append(float(np.clip(evaluator(board), -1.0, 1.0)))
+    record["qd"].append(int(opening.depth))
+    record["pi"].append([])  # Initial color is not known before the first flip.
     board.make_move(first_move, validate=False)
 
     first_color = 1 - int(board.side_to_move)
@@ -215,6 +246,7 @@ def play_game(
             evaluator=turn_evaluator,
             max_depth=search_depth,
             node_budget=node_budget,
+            max_seconds=per_move_seconds(),
         )
         analysis = search.analyze(board)
         search_seconds = time.perf_counter() - search_started
@@ -252,6 +284,11 @@ def play_game(
         record["mov"].append(int(chosen))
         record["q"].append(float(analysis.move_values[chosen]))
         record["v"].append(static_value)
+        record["qd"].append(int(analysis.depth))
+        record["pi"].append(
+            search_policy(analysis.move_values, int(board.side_to_move))
+            if analysis.depth > 0 else []
+        )
         board.make_move(chosen, validate=False)
         record["ply"] += 1
     else:
@@ -266,7 +303,7 @@ def play_game(
     print(
         f"[Self-Play] Game complete: id={record['id']} plies={record['ply']} "
         f"result={record['res']:+.1f} seconds={elapsed:.1f} nodes={total_nodes} "
-        f"nodes_per_second={nodes_per_second:.0f} slowest_ply={slow_ply} "
+        f"nodes_per_second={nodes_per_second:.0f} heuristic_fallbacks={record['qd'].count(0)} slowest_ply={slow_ply} "
         f"slowest_depth={slow_depth} slowest_nodes={slow_nodes} "
         f"slowest_seconds={slow_seconds:.1f}."
     )
