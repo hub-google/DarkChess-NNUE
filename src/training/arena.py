@@ -38,18 +38,38 @@ def paired_benchmark(candidate, baseline, pairs=2, seed=20261022,
         raise ValueError("invalid paired benchmark settings")
     rng = np.random.default_rng(seed)
     pair_scores = []
-    for pair in range(pairs):
+    discarded_pairs = 0
+    attempts = 0
+    # Some ultra-long legal Banqi games can reach the referee's 512-ply
+    # verification limit. Never manufacture a draw for an unfinished game.
+    # Discard the *entire* matched deal to preserve paired comparisons.
+    max_attempts = max(8, pairs * 8)
+    while len(pair_scores) < pairs and attempts < max_attempts:
+        attempts += 1
         bag = make_bag(rng)
         square = int(rng.integers(0, 32))
-        first = play_game(
-            candidate, baseline, bag, square, depth, node_budget, max_seconds
-        )
-        reverse = play_game(
-            baseline, candidate, bag, square, depth, node_budget, max_seconds
-        )
+        try:
+            first = play_game(
+                candidate, baseline, bag, square, depth, node_budget, max_seconds
+            )
+            reverse = play_game(
+                baseline, candidate, bag, square, depth, node_budget, max_seconds
+            )
+        except RuntimeError as exc:
+            if "could not reach a legal terminal within 512 plies" not in str(exc):
+                raise
+            discarded_pairs += 1
+            print(f"[Arena] Discarded incomplete matched deal {attempts}, not scored as a draw")
+            continue
         score = first + (1 - reverse)
         pair_scores.append(float(score))
-        print(f"[Arena] Pair {pair + 1}/{pairs}: candidate points={score:.1f}/2")
+        print(f"[Arena] Pair {len(pair_scores)}/{pairs}: candidate points={score:.1f}/2")
+    if len(pair_scores) != pairs:
+        raise RuntimeError(
+            f"Unable to obtain {pairs} complete matched pairs within "
+            f"{max_attempts} deals; discarded={discarded_pairs}. "
+            "No partial sample is reported as a completed tournament."
+        )
     average = sum(pair_scores) / (2 * len(pair_scores))
     return {
         "paired_games": 2 * pairs,
@@ -58,6 +78,8 @@ def paired_benchmark(candidate, baseline, pairs=2, seed=20261022,
         "candidate_score_rate": average,
         "descriptive_elo_difference": elo_from_score(average),
         "pair_scores": pair_scores,
+        "discarded_incomplete_pairs": discarded_pairs,
+        "attempted_deals": attempts,
         "note": "Paired score only; small samples and no external rating pool cannot establish world ranking.",
     }
 
