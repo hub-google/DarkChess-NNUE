@@ -2,7 +2,7 @@ import sys
 import unittest
 import json
 import tempfile
-from pathlib import Path
+import numpy as np
 from pathlib import Path
 
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "src" / "training"
