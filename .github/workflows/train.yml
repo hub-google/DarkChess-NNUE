@@ -75,8 +75,17 @@ jobs:
           REANALYSIS_MAX_POSITIONS: "64"
           REANALYSIS_DEPTH: "10"
           REANALYSIS_NODE_BUDGET: "50000"
+          REANALYSIS_MAX_SECONDS: "4.0"
           TORCH_NUM_THREADS: "1"
         run: python -u src/training/build_training_cache.py
+
+      - name: Reject undersized replay window before training
+        env:
+          MIN_TRAINING_GAMES: "1000"
+        run: |
+          python -u src/training/validate_training_readiness.py \
+            --manifest training_cache/manifest.json \
+            --min-games "$MIN_TRAINING_GAMES"
 
       - name: Train challenger from champion
         env:

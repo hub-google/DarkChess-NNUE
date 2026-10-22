@@ -20,6 +20,8 @@ CPU-only 台灣暗棋研究專案：**NNUE Value + Star1 chance search + self-pl
 | `self_play_trial.yml` | 指定變更 push / manual | 實際兩局完整對弈 + 終局驗證 + Artifact，無 HF 寫入 |
 | `benchmark.yml` | 搜尋相關 push / manual | 搜尋與完整棋局 CPU throughput |
 | `self_play.yml` | **manual only** | 15 CPU Worker 正式 HF staging |
+| `hf_production_trial.yml` | push 一次／manual | 單 CPU Worker 產一局、驗證、HF 真正上傳並回讀，**不晉升模型** |
+| `arena.yml` | 指定變更 push／manual | Champion 與公開資訊 material baseline 成對對弈並輸出統計 |
 | `train.yml` | **manual only** | HF 合併 → Value/Policy 訓練 → SPRT → 條件式晉升 |
 
 正式排程目前依先前要求暫停，不會因推送程式自動開始大量運算。啟動 `self_play.yml` / `train.yml` 需要 GitHub Actions 手動 Run workflow，以及可用的 `HF_TOKEN` secret。

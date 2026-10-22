@@ -1,0 +1,92 @@
+name: HF live replay integration trial
+
+# One short push-triggered acceptance, no scheduled repeat.
+# The trial uploads *one real completed game* to HF staging and verifies it.
+# It never consolidates, trains or promotes production champion weights.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/hf_production_trial.yml"
+
+concurrency:
+  group: hf-live-replay-trial
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Verify HF write credential exists and dataset is readable
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          test -n "$HF_TOKEN" || (echo "::error::Missing HF_TOKEN secret" && exit 1)
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          dataset = api.repo_info("hub-google/DarkChess-NNUE-Data", repo_type="dataset")
+          print(f"[HF Trial] dataset reachable, revision={dataset.sha}")
+          PY
+      - name: Generate one genuine completed CPU self-play game
+        env:
+          BATCH_SIZE: "1"
+          NUM_BATCHES: "1"
+          OUTPUT_DIR: "output_data"
+          SELF_PLAY_SEED: "20261022"
+          SEARCH_MAX_SECONDS: "3.0"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/workers/self_play.py
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+      - name: Upload verified replay to isolated HF staging
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "1"
+        run: |
+          export PATH_IN_REPO="staging/worker_1/acceptance_${GITHUB_RUN_ID}"
+          echo "PATH_IN_REPO=$PATH_IN_REPO" >> "$GITHUB_ENV"
+          python -u src/workers/upload_batch.py
+      - name: Read back and validate HF stored replay
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, gzip, json
+          from huggingface_hub import HfApi, hf_hub_download
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, str(Path("src/training").resolve()))
+          from validate_replay import validate_record
+          token = os.environ["HF_TOKEN"]
+          prefix = os.environ["PATH_IN_REPO"]
+          api = HfApi(token=token)
+          entries = [e.path for e in api.list_repo_tree(
+              "hub-google/DarkChess-NNUE-Data", path_in_repo=prefix,
+              repo_type="dataset", recursive=True) if e.path.endswith(".jsonl.gz")]
+          if len(entries) != 1:
+              raise RuntimeError(f"Expected exactly 1 uploaded batch under {prefix}; got {len(entries)}")
+          path = hf_hub_download("hub-google/DarkChess-NNUE-Data",
+                                 filename=entries[0], repo_type="dataset", token=token)
+          with gzip.open(path, "rt", encoding="utf-8") as handle:
+              records = [json.loads(s) for s in handle if s.strip()]
+          if len(records) != 1:
+              raise RuntimeError(f"Unexpected remote game count: {len(records)}")
+          plies = validate_record(records[0])
+          print(f"[HF Trial] VERIFIED remote real replay {entries[0]}, {plies} plies")
+          PY

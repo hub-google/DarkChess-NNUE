@@ -9,6 +9,8 @@
 | `ci.yml` | push master / PR master / manual | Python unit tests |
 | `pipeline_smoke.yml` | 指定 training 相關檔案 push / manual | 完整跑 1 局 self-play → cache/reanalysis → tiny value/policy train → paired validation → export |
 | `self_play_trial.yml` | 搜尋/對弈程式 push / manual | **真實完成 2 局棋，檢查合法終局、教師機率與棋譜筆數，輸出 artifact；不寫 HF** |
+| `hf_production_trial.yml` | 單次 push / manual | 一局真實 CPU 對弈 → 終局驗證 → HF staging 上傳 → 從 HF 回讀再驗證；不晉升模型 |
+| `arena.yml` | 指定程式 push / manual | Champion vs material baseline 配對競技場，輸出 JSON 與 artifact |
 | `benchmark.yml` | 指定搜尋/模型檔案 push / manual | CPU search benchmark，輸出 artifact |
 | `self_play.yml` | **manual only** | 15 個 CPU Worker 產生 replay 並上傳 HF staging |
 | `train.yml` | **manual only** | consolidate → cache/reanalysis → train → SPRT → promotion |
@@ -76,13 +78,15 @@ Trigger：`workflow_dispatch`。原本每日 UTC 19:00（台灣次日 03:00）�
    - 使用目前 champion 做小量 reanalysis
    - 寫入 `reanalysis_overrides.npz`
    - 寫入 `manifest.json`
-7. 執行 `src/training/train.py`，從 champion 續訓產生 `models/challenger.nnue`。
+7. 檢查 binary cache 至少有 1,000 局有效對弈（防止空白／過小 buffer 污染 Champion）；不足直接失敗，**不**晉升模型。
+8. 執行 `src/training/train.py`，從 champion 續訓產生 `models/challenger.nnue`。
 8. 執行 `src/training/policy_train.py`，使用搜尋教師 softmax 訓練獨立 CPU Policy Head；沒有新格式教師資料時略過。
 9. 執行 `src/training/sprt_validation.py`：
-   - 最多 400 pairs
-   - depth 8
-   - node budget 20,000
-   - Elo bounds -15 / +15
+   - 最多 200 pairs
+   - depth 6
+   - node budget 1,200
+   - 每步 max_seconds 0.25
+   - Elo bounds -20 / +20
 10. 僅在 validation 設定 `passed=true` 時：
    - 封存舊 champion
    - challenger Value NNUE → champion NNUE；若已有 challenger Policy，亦一起保存為 champion Policy（Policy 尚未參與正式搜尋）
