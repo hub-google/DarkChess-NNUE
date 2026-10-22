@@ -424,17 +424,26 @@ def run_batch(
             opponent_pool or [],
             rng,
         )
-        game = play_game(
-            evaluator,
-            model_version,
-            rng,
-            temperature,
-            explore_plies,
-            opponent_evaluator=opponent[0],
-            opponent_model_version=opponent[1],
-            policy_model=policy_model,
-            policy_prior_mix=policy_prior_mix,
-        )
+        try:
+            game = play_game(
+                evaluator,
+                model_version,
+                rng,
+                temperature,
+                explore_plies,
+                opponent_evaluator=opponent[0],
+                opponent_model_version=opponent[1],
+                policy_model=policy_model,
+                policy_prior_mix=policy_prior_mix,
+            )
+        except RuntimeError as error:
+            if "self-play exceeded 512 plies without reaching a terminal state" not in str(error):
+                raise
+            # Never manufacture a drawn game or discard other completed games.
+            # A rare excessive match is quarantined instead; the worker must
+            # still upload at least one complete replay or fail at upload time.
+            print(f"[Self-Play] Skipping unfinished 512-ply game: {error}")
+            continue
         output_path = output_dir / f"data_{int(time.time() * 1000)}_{game['id']}.jsonl.gz"
         with gzip.open(output_path, "wt", encoding="utf-8") as handle:
             handle.write(json.dumps(game, separators=(",", ":")) + "\n")

@@ -1,7 +1,8 @@
 name: Train only after successful full self-play
 
-# Event-driven bridge: one training job follows a successful manual or one-shot
-# production self-play. No cron and no scheduled unlimited compute.
+# Event-driven bridge for manual 15-worker self-play.
+# Regular 4-worker scheduled cycles feed the independent daily train cron,
+# avoiding four expensive training runs per day.
 on:
   workflow_run:
     workflows: ["Distributed belief-state self-play"]
@@ -14,7 +15,7 @@ permissions:
 
 jobs:
   dispatch-training:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'schedule') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

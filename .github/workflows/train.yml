@@ -1,8 +1,10 @@
 name: Train and promote NNUE
 
-# Automatically dispatched by train_after_self_play.yml on every completed
-# production cycle. Runs are serialized by nnue-training concurrency group.
+# Independent daily training is resilient to incomplete worker matrices.
+# Manual production runs may additionally trigger through workflow_run.
 on:
+  schedule:
+    - cron: "41 3 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -40,16 +42,10 @@ jobs:
         shell: bash
         run: |
           NOW_EPOCH=$(date -u +%s)
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            # Scheduled training represents 19:00 UTC (03:00 Asia/Taipei).
-            CUTOFF_EPOCH=$(date -u -d "$(date -u +%F) 19:00:00" +%s)
-            if [ "$CUTOFF_EPOCH" -gt "$NOW_EPOCH" ]; then
-              CUTOFF_EPOCH=$((CUTOFF_EPOCH - 86400))
-            fi
-          else
-            # A manual run snapshots everything fully uploaded when its job starts.
-            CUTOFF_EPOCH=$NOW_EPOCH
-          fi
+          # Both scheduled and manually dispatched training snapshot all
+          # uploads already finished when the job starts. Concurrent uploads
+          # with later timestamps are left untouched for the next cycle.
+          CUTOFF_EPOCH=$NOW_EPOCH
           echo "CONSOLIDATION_CUTOFF_EPOCH=$CUTOFF_EPOCH" >> "$GITHUB_ENV"
           echo "Snapshot cutoff: $(date -u -d "@$CUTOFF_EPOCH" --iso-8601=seconds)"
 

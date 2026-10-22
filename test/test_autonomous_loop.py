@@ -29,6 +29,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("token=token", code)
         self.assertIn("replay_gate.py", code)
         self.assertIn("steps.enough_games.outputs.ready == 'true'", code)
+        self.assertIn('cron: "41 3 * * *"', code)
         self.assertIn("steps.validate.outputs.passed == 'true'", code)
 
     def test_monthly_empty_commit_keepalive(self):

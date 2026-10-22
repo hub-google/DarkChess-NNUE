@@ -67,6 +67,35 @@ def play_game(first_evaluator, second_evaluator, bag, first_square, depth, node_
     )
 
 
+def play_completed_pair(challenger, champion, rng, depth, node_budget, max_seconds, max_attempts=8):
+    """Retry entire matched deals after an unfinished game, never fake a draw.
+
+    The SPRT likelihood sees only fully completed *pairs*. A failed
+    adjudication discards the whole deal so no color-order bias is introduced.
+    """
+    for attempt in range(max_attempts):
+        bag = make_bag(rng)
+        first_square = int(rng.integers(0, 32))
+        try:
+            first = play_game(
+                challenger, champion, bag, first_square,
+                depth, node_budget, max_seconds,
+            )
+            second = play_game(
+                champion, challenger, bag, first_square,
+                depth, node_budget, max_seconds,
+            )
+            return float(first + 1.0 - second), attempt
+        except RuntimeError as error:
+            if "could not reach a legal terminal within 512 plies" not in str(error):
+                raise
+            print(f"[SPRT] Discarding incomplete paired deal {attempt+1}/{max_attempts}")
+    raise RuntimeError(
+        "Unable to complete an SPRT matched pair within bounded retries; "
+        "no fabricated draws or promotion allowed"
+    )
+
+
 def elo_probability(elo):
     return 1.0 / (1.0 + 10.0 ** (-float(elo) / 400.0))
 
@@ -139,34 +168,18 @@ def main():
     challenger_points = 0.0
     decision = "UNDECIDED"
     pair_scores = []
+    incomplete_deals = 0
 
     print(
         f"Starting paired SPRT: {args.pairs} pairs, "
         f"Elo [{args.elo0}, {args.elo1}], bounds [{lower:.3f}, {upper:.3f}]"
     )
     for pair_index in range(args.pairs):
-        bag = make_bag(rng)
-        first_square = int(rng.integers(0, 32))
-
-        challenger_first_score = play_game(
-            challenger,
-            champion,
-            bag,
-            first_square,
-            args.depth,
-            args.node_budget,
-            args.max_seconds,
+        pair_score, incomplete = play_completed_pair(
+            challenger, champion, rng,
+            args.depth, args.node_budget, args.max_seconds,
         )
-        champion_first_score = play_game(
-            champion,
-            challenger,
-            bag,
-            first_square,
-            args.depth,
-            args.node_budget,
-            args.max_seconds,
-        )
-        pair_score = challenger_first_score + (1.0 - champion_first_score)
+        incomplete_deals += incomplete
         challenger_points += pair_score
         pair_scores.append(float(pair_score))
         llr += paired_score_llr(pair_score, args.elo0, args.elo1)
@@ -201,6 +214,7 @@ def main():
         "max_seconds": args.max_seconds,
         "seed": args.seed,
         "pair_scores": pair_scores,
+        "incomplete_deals_discarded": incomplete_deals,
         "note": "Undecided never promotes. Paired SPRT is incumbent comparison, not external world ranking.",
     }
     Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")

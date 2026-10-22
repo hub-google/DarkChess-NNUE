@@ -8,12 +8,30 @@ from pathlib import Path
 TRAINING_DIR = Path(__file__).resolve().parents[1] / "src" / "training"
 sys.path.insert(0, str(TRAINING_DIR))
 
-from sprt_validation import elo_probability, paired_score_llr, play_game
+from sprt_validation import elo_probability, paired_score_llr, play_game, play_completed_pair
 from unittest.mock import patch
 from types import SimpleNamespace
 
 
 class PairedSPRTTests(unittest.TestCase):
+    def test_incomplete_paired_deal_does_not_fake_draw(self):
+        incomplete = RuntimeError("SPRT referee could not reach a legal terminal within 512 plies")
+        # The first matched deal fails in its second game. It must be dropped
+        # completely; only the second deal is counted as a full valid pair.
+        with patch("sprt_validation.play_game", side_effect=[1.0, incomplete, 0.5, 0.0]):
+            points, discarded = play_completed_pair(
+                None, None, np.random.default_rng(3), 1, 50, 0.1
+            )
+        self.assertEqual(points, 1.5)
+        self.assertEqual(discarded, 1)
+
+    def test_all_unfinished_games_refuse_promotion(self):
+        incomplete = RuntimeError("SPRT referee could not reach a legal terminal within 512 plies")
+        with patch("sprt_validation.play_game", side_effect=incomplete):
+            with self.assertRaisesRegex(RuntimeError, "Unable to complete"):
+                play_completed_pair(None, None, np.random.default_rng(3), 1, 50, 0.1, max_attempts=2)
+
+
     def test_nonterminal_after_move_limit_must_not_fake_draw(self):
         class NeverTerminal:
             hidden_pieces = [0] * 32

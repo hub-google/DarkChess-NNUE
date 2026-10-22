@@ -96,3 +96,7 @@ GitHub scheduled self_play.yml (4 CPU workers × 55 minutes, every 6h)
 `monthly_activity.yml` 每月建立一筆**空 Commit（不增加檔案）**，避免 GitHub 長期沒有儲存庫活動後將 schedule 自動停用。這不會啟動新一輪生產訓練。`autonomous_loop_acceptance.yml` 對 GitHub 的排程契約、HF 真實存取與少於 1,000 局跳過訓練做回歸測試。原先一次性 15 Worker Action 不會被重複派送。
 
 **自动循环实际验收**：`autonomous_loop_acceptance.yml` 已增加一次真实 `train.yml` dispatch（不额外启动 15 Worker），用来验证既有 GitHub Token 权限、HF staging 合并、私人 replay 下载与 `ready=false` 的安全略过行为。低于 1000 局时绝不训练或晋升；达到门槛会照正式流程执行，不以本次验收为由绕过 SPRT。
+
+### 自動 CPU 配額修正
+
+由於訓練比產生一小批棋譜更昂貴，最終排程改為**每天四次 4 Worker／55 分鐘自我對弈 + 每天一次 03:41 UTC 訓練**，避免每次爬取都重新跑 3 個 epoch；手動 15 Worker 完成後仍會額外觸發一次訓練。Train Workflow 使用 cutoff 保護同時上傳的 staging；不足 1000 局正常略過。若比賽 512 步尚未終局，完整對局資料不允許偽造和局：Self-play 略過不完整的一局，SPRT 在配對層重抽整組底牌，超出重試額度直接失敗、不晉升。
