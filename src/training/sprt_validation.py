@@ -61,7 +61,10 @@ def play_game(first_evaluator, second_evaluator, bag, first_square, depth, node_
         ).analyze(board)
         board.make_move(analysis.move, validate=False)
 
-    return 0.5
+    raise RuntimeError(
+        "SPRT referee could not reach a legal terminal within 512 plies; "
+        "refusing to silently count an incomplete game as a draw"
+    )
 
 
 def elo_probability(elo):
