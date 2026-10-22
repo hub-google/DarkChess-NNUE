@@ -436,6 +436,13 @@ class ChanceSearch:
         finally:
             self._deadline = None
 
+    def _opening_fallback(self, moves):
+        """Legal first flip when even depth-one search exceeds CPU budget."""
+        if not moves:
+            raise ValueError("the initial board has no legal flips")
+        values = {int(move): 0.0 for move in moves}
+        return SearchResult(int(moves[0]), 0.0, values, self.nodes, 0)
+
     def analyze_first_flip(self, board):
         if board.side_to_move != NONE:
             raise ValueError("analyze_first_flip requires the initial position")
@@ -471,7 +478,10 @@ class ChanceSearch:
                     sign = 1.0 if PIECE_COLOR[piece] == RED else -1.0
                     leaves.append(child)
                     weights.append(sign * count / total)
-                values_array = self._evaluate_leaf_boards(leaves)
+                try:
+                    values_array = self._evaluate_leaf_boards(leaves)
+                except SearchBudgetExceeded:
+                    return self._opening_fallback(moves)
                 for weight, value in zip(weights, values_array):
                     expected += weight * float(value)
                 values = {move: float(expected) for move in moves}
@@ -490,7 +500,10 @@ class ChanceSearch:
                     sign = 1.0 if PIECE_COLOR[piece] == RED else -1.0
                     leaves.append(child)
                     metadata.append((move, sign * count / total))
-            leaf_values = self._evaluate_leaf_boards(leaves)
+            try:
+                leaf_values = self._evaluate_leaf_boards(leaves)
+            except SearchBudgetExceeded:
+                return self._opening_fallback(moves)
             representative_values = {move: 0.0 for move in search_moves}
             for (move, weight), value in zip(metadata, leaf_values):
                 representative_values[move] += weight * float(value)
@@ -508,7 +521,10 @@ class ChanceSearch:
                 child = board.clone()
                 child.make_move(move, flip_piece=piece, validate=False)
                 self._prepare_child(board, child, move, flip_piece=piece)
-                red_value = self._value(child, self.max_depth - 1, -math.inf, math.inf)
+                try:
+                    red_value = self._value(child, self.max_depth - 1, -math.inf, math.inf)
+                except SearchBudgetExceeded:
+                    return self._opening_fallback(moves)
                 first_player_value = red_value if PIECE_COLOR[piece] == RED else -red_value
                 expected_utility += (count / total) * first_player_value
             representative_values[move] = float(np.clip(expected_utility, -1.0, 1.0))

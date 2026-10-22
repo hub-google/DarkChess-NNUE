@@ -63,7 +63,7 @@ def benchmark(model, executable, pairs, node_budget, max_seconds, seed):
         })
         print(f"[External Arena] pair={index+1}/{pairs} model_points={points}/2", flush=True)
     return {
-        "candidate": "NNUE champion", "opponent": "MistyBanqi 0.2.7 pinned SHA",
+        "candidate": "candidate specified by --candidate-mode", "opponent": "MistyBanqi 0.2.7 pinned SHA",
         "pairs": pairs, "games": 2 * pairs,
         "candidate_points": total,
         "candidate_score_rate": total / (2 * pairs),
@@ -110,6 +110,7 @@ def main():
     report = benchmark(model, args.misty, args.pairs, args.node_budget, args.max_seconds, args.seed)
     report["wall_seconds"] = round(time.monotonic() - started, 1)
     report["candidate_mode"] = args.candidate_mode
+    report["candidate"] = args.candidate_mode
     Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print("[External Arena] " + json.dumps(report), flush=True)
 

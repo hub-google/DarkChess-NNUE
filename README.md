@@ -66,3 +66,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 ## 網頁訓練統計與自動發布
 
 `publish_training_status.yml` 在 Self-play 或正式訓練 workflow 完成時更新 `frontend/public/training-status.json`；只掃描 HF Dataset `staging` 子樹與單一 canonical replay，而不是歷史資料全根目錄。若統計 JSON 真正改變，GitHub Actions 會 commit 然後主動 dispatch `deploy_pages.yml`，玩家看到的是有 `updatedAt` 時戳的公開彙總，而非直接讀私人 HF Dataset。所有正式 Self-play／train 的定時 cron 仍維持停用。
+
+### 擴大外部配對測試
+
+已成功跑過同底牌兩對四局的外部基準，得分率：NNUE Champion 12.5%、修正後純 material 50%、hybrid 25%。因只有四局不採用這組結果直接更換 Champion。已擴大 `external_arena.yml` 至 **每候選方案 20 對、40 局**（三種共 120 局），保留相同 seed、相同 CPU 節點及時間上限的試驗。此舉對照修正後 bootstrap 是否能有較穩定收益，並避免用自我對弈 Elo 取代外部衡量。
