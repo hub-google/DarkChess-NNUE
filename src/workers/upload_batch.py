@@ -2,6 +2,7 @@ import os
 import glob
 import gzip
 import time
+import uuid
 import json
 import sys
 from pathlib import Path
@@ -53,7 +54,7 @@ def merge_and_upload():
 
     # 3. Write consolidated file locally
     timestamp = int(time.time())
-    consolidated_filename = f'batch_{timestamp}.jsonl.gz'
+    consolidated_filename = f'batch_{timestamp}_{uuid.uuid4().hex[:12]}.jsonl.gz'
     consolidated_file = os.path.join(output_dir, consolidated_filename)
     with gzip.open(consolidated_file, 'wt', encoding='utf-8') as gz:
         gz.writelines(merged_lines)

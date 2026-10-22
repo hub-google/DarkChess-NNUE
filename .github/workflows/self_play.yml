@@ -1,9 +1,10 @@
 name: Distributed belief-state self-play
 
-# Automatic workflows paused per user request
+# Autonomous bounded cycles; manual mode retains the original 15-worker matrix.
+# Slightly offset from top of hour to reduce GitHub cron congestion.
 on:
-  # schedule:
-  #   - cron: "0 */6 * * *"
+  schedule:
+    - cron: "17 */6 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -21,7 +22,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        # 4 workers for inexpensive 6-hour scheduled cycles; 15 for manual runs.
+        worker_id: ${{ fromJSON(github.event_name == 'schedule' && '[1,2,3,4]' || '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -52,16 +54,18 @@ jobs:
           SEARCH_NODE_BUDGET_MID: "1200"
           SEARCH_NODE_BUDGET_LATE: "2500"
           TORCH_NUM_THREADS: "1"
+          # A scheduled cycle must finish long before the next 6-hour run.
+          GENERATION_WINDOW_SECONDS: ${{ github.event_name == 'schedule' && '3300' || '21000' }}
+          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
         run: |
           mkdir -p output_data
           export DATE_STR
           DATE_STR=$(date +%Y%m%d)
           
           START_TIME=$(date +%s)
-          # Runs are scheduled six hours apart. Stop generation after 5h50 so
-          # the next run has a nominal ten-minute pause. GitHub may deliver a
-          # scheduled event late, so the real pause can occasionally be longer.
-          GENERATION_BUDGET=21000
+          # Scheduled: 55 minutes. Manual: 5h50. Each batch is bounded;
+          # games saved before timeout are still verified and uploaded.
+          GENERATION_BUDGET="${GENERATION_WINDOW_SECONDS}"
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))

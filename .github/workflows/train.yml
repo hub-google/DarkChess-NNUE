@@ -1,10 +1,8 @@
 name: Train and promote NNUE
 
-# Automatic workflows paused per user request
+# Automatically dispatched by train_after_self_play.yml on every completed
+# production cycle. Runs are serialized by nnue-training concurrency group.
 on:
-  # schedule:
-  #   # 19:00 UTC is 03:00 the following day in Asia/Taipei (UTC+8).
-  #   - cron: "0 19 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -60,14 +58,41 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python -u src/training/consolidate_buffer.py
 
-      - name: Download replay buffer
+      - name: Download private replay buffer using existing HF credential
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p datasets
-          python -c "from huggingface_hub import hf_hub_download; import shutil; p=hf_hub_download(repo_id='hub-google/DarkChess-NNUE-Data', repo_type='dataset', filename='replay_buffer.jsonl.gz'); shutil.copy(p, 'datasets/replay_buffer.jsonl.gz')"
+          python - <<'PY'
+          import os
+          import shutil
+          from huggingface_hub import hf_hub_download
+          token = os.environ["HF_TOKEN"]
+          if not token:
+              raise RuntimeError("HF_TOKEN missing: private replay is unreadable")
+          path = hf_hub_download(
+              repo_id="hub-google/DarkChess-NNUE-Data",
+              repo_type="dataset",
+              filename="replay_buffer.jsonl.gz",
+              token=token,
+          )
+          shutil.copy(path, "datasets/replay_buffer.jsonl.gz")
+          print("[Training] Downloaded authenticated private replay snapshot.")
+          PY
+
+      - name: Check minimum game count without treating accumulation as failure
+        id: enough_games
+        env:
+          MIN_TRAINING_GAMES: "1000"
+        run: |
+          python -u src/training/replay_gate.py \
+            --replay datasets/replay_buffer.jsonl.gz \
+            --minimum "$MIN_TRAINING_GAMES" \
+            --github-output "$GITHUB_OUTPUT"
+
 
       - name: Build binary training cache and reanalyze hard positions
+        if: steps.enough_games.outputs.ready == 'true'
         env:
           MAX_POSITIONS_PER_GAME: "4"
           MAX_TRAINING_SAMPLES: "2000000"
@@ -81,6 +106,7 @@ jobs:
         run: python -u src/training/build_training_cache.py
 
       - name: Reject undersized replay window before training
+        if: steps.enough_games.outputs.ready == 'true'
         env:
           MIN_TRAINING_GAMES: "1000"
         run: |
@@ -89,6 +115,7 @@ jobs:
             --min-games "$MIN_TRAINING_GAMES"
 
       - name: Train challenger from champion
+        if: steps.enough_games.outputs.ready == 'true'
         env:
           BATCH_SIZE: "1024"
           TRAINING_EPOCHS: "3"
@@ -99,6 +126,7 @@ jobs:
         run: python -u src/training/train.py
 
       - name: Train optional Policy teacher head on CPU
+        if: steps.enough_games.outputs.ready == 'true'
         env:
           TORCH_NUM_THREADS: "1"
         run: |
@@ -110,6 +138,7 @@ jobs:
             --max-samples 100000
 
       - name: Validate challenger against champion
+        if: steps.enough_games.outputs.ready == 'true'
         id: validate
         env:
           TORCH_NUM_THREADS: "1"
@@ -179,5 +208,13 @@ jobs:
           echo "Promoted champion: requested GitHub Pages redeployment."
 
       - name: Keep champion when challenger fails gate
-        if: steps.validate.outputs.passed != 'true'
+        if: steps.enough_games.outputs.ready == 'true' && steps.validate.outputs.passed != 'true'
         run: echo "Challenger did not pass paired SPRT; existing champion is retained."
+
+      - name: Accumulate additional self-play when buffer is too small
+        if: steps.enough_games.outputs.ready != 'true'
+        run: |
+          echo "[Training] Need at least 1000 complete games before training."
+          echo "[Training] No false failure, no false champion promotion."
+          echo "[Training] Next scheduled self-play will keep accumulating data."
+

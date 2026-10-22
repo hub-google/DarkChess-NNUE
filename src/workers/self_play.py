@@ -85,17 +85,28 @@ def load_evaluator():
     return champion
 
 
-def choose_opponent(champion, archives, rng, archive_probability=None):
-    if not archives:
-        return champion
+def choose_opponent(champion, archives, rng, archive_probability=None,
+                    bootstrap_probability=None):
+    """Diverse self-play league: champion, earlier snapshots and a fixed
+    public-information baseline. The baseline is an opponent, not a
+    supervised shortcut to private hidden-piece information.
+    """
+    if bootstrap_probability is None:
+        bootstrap_probability = float(
+            os.environ.get("BOOTSTRAP_OPPONENT_PROBABILITY", "0.25")
+        )
     if archive_probability is None:
         archive_probability = float(
             os.environ.get("ARCHIVE_OPPONENT_PROBABILITY", "0.25")
         )
-    probability = min(max(float(archive_probability), 0.0), 1.0)
-    if rng.random() >= probability:
-        return champion
-    return archives[int(rng.integers(0, len(archives)))]
+    bootstrap_probability = min(max(float(bootstrap_probability), 0.0), 1.0)
+    archive_probability = min(max(float(archive_probability), 0.0), 1.0)
+    lottery = float(rng.random())
+    if lottery < bootstrap_probability:
+        return material_evaluate, "bootstrap-material"
+    if archives and lottery < bootstrap_probability + (1 - bootstrap_probability) * archive_probability:
+        return archives[int(rng.integers(0, len(archives)))]
+    return champion
 
 
 def choose_search_depth(hidden_count):

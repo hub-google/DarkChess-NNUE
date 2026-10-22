@@ -17,6 +17,7 @@ import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from huggingface_hub import CommitOperationDelete, HfApi, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 
 MAX_REPLAY_GAMES = 500_000  # Sliding window capacity
 MAX_REPLAY_BYTES = int(os.environ.get("MAX_REPLAY_BUFFER_BYTES", str(2 * 1024**3)))
@@ -234,9 +235,10 @@ def consolidate():
                     all_games.append(line_str)
         existing_buffer_loaded = True
         print(f"   Read {len(all_games)} games from existing buffer.")
-    except Exception as e:
-        # The first successful consolidation legitimately has no buffer yet.
-        print(f"   No readable existing buffer; continuing with staging: {e}")
+    except EntryNotFoundError:
+        # Only the very first consolidation legitimately has no buffer yet.
+        # Never mistake 401/403, networking or corruption for a fresh dataset.
+        print("   No prior replay buffer exists; starting from verified staging.")
 
     # 3. Download staging files. On the first bootstrap, walk newest-first and
     # stop once the 500k-game replay window is full. Older files are outside
