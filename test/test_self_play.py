@@ -48,6 +48,7 @@ class OpponentPoolTests(unittest.TestCase):
                 archive,
                 rng,
                 archive_probability=0.0,
+                bootstrap_probability=0.0,
             ),
             champion,
         )
@@ -61,6 +62,7 @@ class OpponentPoolTests(unittest.TestCase):
             archive,
             rng,
             archive_probability=1.0,
+            bootstrap_probability=0.0,
         )
         self.assertIn(selected[1], {"old-a", "old-b"})
 
