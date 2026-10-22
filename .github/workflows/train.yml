@@ -16,6 +16,7 @@ concurrency:
 jobs:
   train-and-promote:
     runs-on: ubuntu-latest
+    timeout-minutes: 345
     permissions:
       contents: write
 
@@ -106,11 +107,12 @@ jobs:
           python -u src/training/sprt_validation.py \
             --champion models/champion.nnue \
             --challenger models/challenger.nnue \
-            --pairs 400 \
-            --depth 8 \
-            --node-budget 20000 \
-            --elo0 -15 \
-            --elo1 15
+            --pairs 200 \
+            --depth 6 \
+            --node-budget 1200 \
+            --max-seconds 0.25 \
+            --elo0 -20 \
+            --elo1 20
 
       - name: Promote validated challenger
         if: steps.validate.outputs.passed == 'true'

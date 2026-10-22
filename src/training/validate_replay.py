@@ -4,7 +4,7 @@ import gzip
 import json
 from pathlib import Path
 
-from board import DarkChessBoardPy
+from board import DarkChessBoardPy, NONE
 from replay_format import is_supported_replay_version
 
 
@@ -18,17 +18,39 @@ def validate_record(record):
         if field in record and len(record[field]) != len(moves):
             raise ValueError(f"{field} length does not match moves")
     board = DarkChessBoardPy(bag=record["hid"])
-    for move in moves:
+    for ply, move in enumerate(moves):
+        if "qd" in record and int(record["qd"][ply]) < 0:
+            raise ValueError("negative completed search depth")
+        for field in ("q", "v"):
+            if field in record and not -1.0 <= float(record[field][ply]) <= 1.0:
+                raise ValueError(f"{field} outside [-1,1]")
+        if "pi" in record:
+            distribution = record["pi"][ply]
+            if not isinstance(distribution, list) or len(distribution) > 16:
+                raise ValueError("invalid search policy length")
+            if board.side_to_move == NONE and distribution:
+                raise ValueError("the first flip has no known side")
+            if distribution:
+                if "qd" in record and int(record["qd"][ply]) == 0:
+                    raise ValueError("fallback cannot be a search-policy label")
+                legal = set(int(m) for m in board.generate_legal_moves())
+                seen = set()
+                total = 0.0
+                for row in distribution:
+                    if not isinstance(row, list) or len(row) != 2:
+                        raise ValueError("malformed policy row")
+                    action, probability = int(row[0]), float(row[1])
+                    if action in seen or action not in legal or not 0 <= probability <= 1:
+                        raise ValueError("invalid or illegal search-policy action")
+                    seen.add(action)
+                    total += probability
+                if abs(total - 1.0) > 1e-4:
+                    raise ValueError("search-policy probabilities are not normalized")
         board.make_move(int(move), validate=True)
     terminal, result = board.is_game_over()
     if not terminal or float(record["res"]) != float(result):
         raise ValueError("record is not a completed terminal game")
-    for distribution, depth in zip(record.get("pi", []), record.get("qd", [])):
-        if depth <= 0 and distribution:
-            raise ValueError("fallback cannot be a search-policy label")
-        if distribution and abs(sum(float(row[1]) for row in distribution) - 1) > 1e-4:
-            raise ValueError("invalid search policy distribution")
-    return len(moves)
+     return len(moves)
 
 
 def validate_directory(directory):

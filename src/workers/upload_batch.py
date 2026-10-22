@@ -2,7 +2,13 @@ import os
 import glob
 import gzip
 import time
+import json
+import sys
+from pathlib import Path
 from huggingface_hub import HfApi
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "training"))
+from validate_replay import validate_record
 
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 
@@ -17,17 +23,26 @@ def merge_and_upload():
     merged_lines = []
     valid_source_files = []
     for f in files:
+        file_records = []
         try:
             with gzip.open(f, 'rt', encoding='utf-8') as gz:
-                merged_lines.extend(gz.readlines())
-            valid_source_files.append(f)
-        except Exception as e:
-            print(f"Warning: skipping corrupted file {f}: {e}")
+                for line in gz:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    validate_record(record)
+                    file_records.append(json.dumps(record, separators=(",", ":")) + "\n")
+        except Exception as exc:
+            # Never upload an unverifiable game or delete its original file.
+            raise RuntimeError(f"Refusing invalid self-play file {f}: {exc}") from exc
+        if not file_records:
+            raise RuntimeError(f"Refusing empty self-play file {f}")
+        merged_lines.extend(file_records)
+        valid_source_files.append(f)
 
     if not merged_lines:
         raise RuntimeError("No valid completed game records found for upload.")
-
-    print(f"Merged {len(merged_lines)} game records from {len(files)} files.")
+    print(f"Verified {len(merged_lines)} terminal game records from {len(files)} files.")
 
     # 2. Determine remote path
     path_in_repo = os.environ.get('PATH_IN_REPO')

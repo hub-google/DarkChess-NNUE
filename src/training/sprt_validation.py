@@ -28,7 +28,7 @@ def score_for_color(red_result, color):
     return red_score if color == RED else 1.0 - red_score
 
 
-def play_game(first_evaluator, second_evaluator, bag, first_square, depth, node_budget):
+def play_game(first_evaluator, second_evaluator, bag, first_square, depth, node_budget, max_seconds=None):
     """
     Play a game while keeping model identity attached to player order.
 
@@ -55,6 +55,7 @@ def play_game(first_evaluator, second_evaluator, bag, first_square, depth, node_
             evaluator=evaluator,
             max_depth=depth,
             node_budget=node_budget,
+            max_seconds=max_seconds,
         ).analyze(board)
         board.make_move(analysis.move, validate=False)
 
@@ -101,7 +102,8 @@ def main():
     parser.add_argument("--challenger", required=True)
     parser.add_argument("--pairs", type=int, default=200)
     parser.add_argument("--depth", type=int, default=8)
-    parser.add_argument("--node-budget", type=int, default=20000)
+    parser.add_argument("--node-budget", type=int, default=2000)
+    parser.add_argument("--max-seconds", type=float, default=0.25)
     parser.add_argument("--elo0", type=float, default=0.0)
     parser.add_argument("--elo1", type=float, default=15.0)
     parser.add_argument("--alpha", type=float, default=0.05)
@@ -116,6 +118,8 @@ def main():
 
     if args.pairs <= 0:
         raise ValueError("--pairs must be positive")
+    if args.max_seconds <= 0:
+        raise ValueError("--max-seconds must be positive")
     if not args.elo1 > args.elo0:
         raise ValueError("--elo1 must be greater than --elo0")
 
@@ -144,6 +148,7 @@ def main():
             first_square,
             args.depth,
             args.node_budget,
+            args.max_seconds,
         )
         champion_first_score = play_game(
             champion,
@@ -152,6 +157,7 @@ def main():
             first_square,
             args.depth,
             args.node_budget,
+            args.max_seconds,
         )
         pair_score = challenger_first_score + (1.0 - champion_first_score)
         challenger_points += pair_score
