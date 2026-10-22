@@ -54,3 +54,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 ## 外部開源引擎對戰
 
 `external_arena.yml` 會抓取固定 commit `9f7fbe849f5d4a2b3358b1b18a31a2cf1bfdcc5c` 的 [MistyBanqi](https://github.com/brianhliou/misty-banqi) MIT 授權 Rust 引擎，編譯為原生 UCI binary，再以兩局同樣隱藏底牌、交換玩家順序的配對比賽測試 NNUE Champion。這是獨立引擎，跟只對戰自身或 material baseline 不同。公共 FEN 不傳任何真實暗牌，並以 `searchmoves` 強制當局合法根動作。MistyBanqi 與本專案長追、和棋實作仍可能不完全相同，若 UCI 回傳非法動作，測試將**失敗而不是悄悄變更棋規**。兩對／四局為端到端 smoke，不是 Elo 信賴區間，也不是世界第一證據。
+
+## 驗證報告與模型部署
+
+正式 `train.yml` 每次 SPRT 會輸出 `sprt_results.json`（配對局數、逐對比分、LLR、決策與參數），由 Action 保存為 artifact。只有 `ACCEPT_H1` 才會提交新 Champion 權重，並透過 GitHub Actions API 主動派送 `deploy_pages.yml` 對外更新網頁；`UNDECIDED` 或 `ACCEPT_H0` 保留既有權重，不假裝日更進步。正式評估每一步上限改為 0.10 秒，200 pairs，目的使 CPU Job 在 6 小時期限內可控。

@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 345
     permissions:
       contents: write
+      actions: write
 
     steps:
       - uses: actions/checkout@v4
@@ -119,9 +120,21 @@ jobs:
             --pairs 200 \
             --depth 6 \
             --node-budget 1200 \
-            --max-seconds 0.25 \
+            --max-seconds 0.10 \
             --elo0 -20 \
-            --elo1 20
+            --elo1 20 \
+            --output sprt_results.json
+
+      - name: Preserve SPRT and training diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-training-${{ github.run_id }}
+          path: |
+            training_cache/manifest.json
+            sprt_results.json
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Promote validated challenger
         if: steps.validate.outputs.passed == 'true'
@@ -156,6 +169,14 @@ jobs:
             git commit -m "chore: promote validated NNUE champion"
             git push
           fi
+
+      - name: Redeploy web champion only after genuine promotion
+        if: steps.validate.outputs.passed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "Promoted champion: requested GitHub Pages redeployment."
 
       - name: Keep champion when challenger fails gate
         if: steps.validate.outputs.passed != 'true'

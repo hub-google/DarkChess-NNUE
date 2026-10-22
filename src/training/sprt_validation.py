@@ -1,6 +1,8 @@
 import argparse
 import math
 import os
+import json
+from pathlib import Path
 
 import numpy as np
 
@@ -109,6 +111,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--beta", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=20260731)
+    parser.add_argument("--output", default="sprt_results.json")
     args = parser.parse_args()
 
     if not os.path.exists(args.champion):
@@ -132,6 +135,7 @@ def main():
     llr = 0.0
     challenger_points = 0.0
     decision = "UNDECIDED"
+    pair_scores = []
 
     print(
         f"Starting paired SPRT: {args.pairs} pairs, "
@@ -161,6 +165,7 @@ def main():
         )
         pair_score = challenger_first_score + (1.0 - champion_first_score)
         challenger_points += pair_score
+        pair_scores.append(float(pair_score))
         llr += paired_score_llr(pair_score, args.elo0, args.elo1)
 
         if (pair_index + 1) % 10 == 0:
@@ -180,6 +185,22 @@ def main():
     pairs_played = pair_index + 1
     score_rate = challenger_points / (2.0 * pairs_played)
     passed = decision == "ACCEPT_H1"
+    report = {
+        "decision": decision,
+        "passed": passed,
+        "pairs_played": pairs_played,
+        "games_played": pairs_played * 2,
+        "score_rate": score_rate,
+        "log_likelihood_ratio": llr,
+        "elo0": args.elo0, "elo1": args.elo1,
+        "alpha": args.alpha, "beta": args.beta,
+        "depth": args.depth, "node_budget": args.node_budget,
+        "max_seconds": args.max_seconds,
+        "seed": args.seed,
+        "pair_scores": pair_scores,
+        "note": "Undecided never promotes. Paired SPRT is incumbent comparison, not external world ranking.",
+    }
+    Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")
     set_action_result(passed)
     print(
         f"SPRT decision={decision}, pairs={pairs_played}, "
