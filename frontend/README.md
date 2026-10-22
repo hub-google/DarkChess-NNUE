@@ -1,32 +1,23 @@
-# React + TypeScript + Vite
+# DarkChess-NNUE 網頁端
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+這是 GitHub Pages 的 React + TypeScript + Vite 暗棋公開對弈介面，與 Python 正式 Self-play／NNUE 訓練／SPRT 引擎**不是同一套搜尋程式**。
 
-Currently, two official plugins are available:
+## 實際功能
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- `src/engine/board.ts`：瀏覽器暗棋棋規與簡化走法評分。
+- `src/engine/nnue.ts`：讀取 `public/models/champion.bin`、`champion.json` 的 NNUE Value 權重。
+- `src/components/Board.tsx`、`Sidebar.tsx`：棋盤和互動元件。
+- `src/components/TrainingStatus.tsx`：顯示靜態已發布 `public/training-status.json`，**不是即時 Hugging Face 資料**。
 
-## React Compiler
+目前不包含正式 Python Star1 搜尋，也不使用最新的 `models/champion.policy`。後續需先完成搜尋核心同源 WASM 和相同計算額度的棋力驗證。
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 本地開發
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm ci
+npm test
+npm run build
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+前端部署以 `.github/workflows/deploy_pages.yml` 手動執行，未恢復自動推送部署。後端資料與訓練請參考儲存庫根目錄 `README.md` 與 `docs/requirements/`。
