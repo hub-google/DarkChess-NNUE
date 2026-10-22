@@ -1,0 +1,38 @@
+name: Launch one verified full CPU self-play cycle
+
+# Exactly one push triggers initial full-scale generation. Ongoing production
+# self-play remains manual, and no cron is enabled.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/run_full_production_once.yml"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  verify-and-launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU test dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Verify all tests before any 15-worker production run
+        run: python -m unittest discover -s test -p "test_*.py" -v
+      - name: Dispatch the existing 15-worker full production self-play
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Launch] Dispatched self_play.yml for one 15-worker production cycle."
+          echo "[Launch] Once it succeeds, on-completion training dispatcher starts train.yml."

@@ -235,3 +235,11 @@ export frontend model
 ```
 
 目前不應把這張圖理解成「背景會自動一直跑」；生產 self-play / train / deploy / status publish 都需要手動啟動，只有 CI、pipeline smoke 與 benchmark 依各自 push 條件自動執行。
+
+## 十、一次性的正式訓練鏈接（2026-10-22）
+
+- `hf_bootstrap.yml`：只有原 HF Dataset 無法存取時，使用既有 `hub-google` 帳號在同名位置建立新的私人 Dataset；通過一局 CPU 對弈、HF upload/download 及終局重播驗證，不復原舊資料。
+- `run_full_production_once.yml`：首次 push 或手動觸發，先跑 Python correctness tests，再使用 GitHub API dispatch 已有 `self_play.yml`；15 Worker、最多 5 小時 50 分，向 HF staging 上傳合法完整對局。**這個 workflow 不定時重複執行。**
+- `train_after_self_play.yml`：只有 `self_play.yml` 成功完成時，才透過 `workflow_dispatch` 啟動正式 `train.yml`。一個生產 Self-play 工作不成功，就不會自動訓練。
+- `train.yml`：consolidate 後檢查 `training_cache/manifest.json` 至少 1,000 局有效終局才開始 Value/Policy 訓練。SPRT 改用每步 0.25 秒、200 pairs、depth 6、1,200 節點預算；未通過 H1 不晉升。
+- 所有驗收／啟動都只代表 GitHub Actions 真正啟動或完成，不能當作棋力變強的證明；正式勝負需根據可回溯的配對結果。

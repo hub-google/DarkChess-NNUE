@@ -39,3 +39,11 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 詳細需求與實際流程：`docs/requirements/01_專案目標與架構總覽.md`、`03_訓練資料與分散式儲存.md`、`04_模型訓練與棋力驗證.md`、`05_前端網頁與容錯機制.md`、`07_GitHub_Actions_執行流程與腳本對照.md`。
 
 **研究目標是達到國際頂尖暗棋棋力，沒有任何世界第一的現成驗證。**
+
+## HF 資料集與正式訓練
+
+2026-10-22 已在原 HF 帳號、原 ID `hub-google/DarkChess-NNUE-Data` 重建缺失的**私人** dataset，並用 GitHub Action 真實對弈完成「上傳 → 回讀 → 終局重播」驗證；**已不存在的舊 replay 尚未復原**。見 [HF bootstrap 驗收](https://github.com/hub-google/DarkChess-NNUE/actions/runs/39755073316)。
+
+本次另提供 `run_full_production_once.yml`：先跑 CPU correctness tests，再以 `workflow_dispatch` 啟動現有 15-worker `self_play.yml` 的**一次**正式資料生成；`train_after_self_play.yml` 只在生產 Self-play 成功結束時觸發一次 `train.yml`。正式自動 cron 仍停用。正式 training 至少要有 **1000 局有效棋譜**，通過配對 SPRT 才能替換 Champion；不足會失敗而非假裝有進步。
+
+注意：完整生產流程的 Action 可能需要數小時；Action 被接受／啟動不等於已訓練成功，更不代表世界排名已獲證明。

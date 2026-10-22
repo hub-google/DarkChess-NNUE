@@ -1,0 +1,26 @@
+name: Train only after successful full self-play
+
+# Event-driven bridge: one training job follows a successful manual or one-shot
+# production self-play. No cron and no scheduled unlimited compute.
+on:
+  workflow_run:
+    workflows: ["Distributed belief-state self-play"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch-training:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch protected production training workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Train Bridge] Dispatched train.yml with MIN_TRAINING_GAMES=1000, SPRT promotion gate."
