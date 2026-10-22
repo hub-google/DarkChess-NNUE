@@ -17,7 +17,7 @@ class HFBootstrapTests(unittest.TestCase):
 
     def test_missing_dataset_created_and_checked(self):
         api = MagicMock()
-        api.repo_info.side_effect = [RepositoryNotFoundError("404 missing"), MagicMock(sha="abc")]
+        api.repo_info.side_effect = [RepositoryNotFoundError("404 missing", response=MagicMock()), MagicMock(sha="abc")]
         self.assertTrue(ensure_dataset(api, "owner/data", token="test"))
         api.create_repo.assert_called_once_with(
             repo_id="owner/data", repo_type="dataset",
