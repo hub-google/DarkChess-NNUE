@@ -41,12 +41,30 @@ jobs:
             --champion models/champion.nnue \
             --pairs 2 \
             --node-budget 400 \
-            --max-seconds 0.15
+            --max-seconds 0.15 \
+            --candidate-mode champion \
+            --output external_arena_champion.json
+          python -u src/training/external_arena.py \
+            --misty /tmp/misty-banqi/target/release/banqi-engine \
+            --champion models/champion.nnue \
+            --pairs 2 \
+            --node-budget 400 \
+            --max-seconds 0.15 \
+            --candidate-mode material \
+            --output external_arena_material.json
+          python -u src/training/external_arena.py \
+            --misty /tmp/misty-banqi/target/release/banqi-engine \
+            --champion models/champion.nnue \
+            --pairs 2 \
+            --node-budget 400 \
+            --max-seconds 0.15 \
+            --candidate-mode hybrid \
+            --output external_arena_hybrid.json
       - name: Preserve independently evaluated game results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: misty-external-arena-${{ github.sha }}
-          path: external_arena_results.json
+          path: external_arena_*.json
           if-no-files-found: warn
           retention-days: 30

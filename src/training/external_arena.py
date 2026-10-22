@@ -14,7 +14,7 @@ import torch
 
 from board import DarkChessBoardPy, PIECE_COLOR, RED
 from misty_uci import choose_misty_move
-from search import ChanceSearch
+from search import ChanceSearch, material_evaluate
 from sprt_validation import make_bag, score_for_color
 from train import load_model_file
 from nnue_eval import ModelEvaluator
@@ -73,9 +73,23 @@ def benchmark(model, executable, pairs, node_budget, max_seconds, seed):
     }
 
 
+class HybridEvaluator:
+    """Experimentally blend existing champion with independent material logic."""
+    def __init__(self, value_evaluator, material_weight=0.25):
+        self.value_evaluator = value_evaluator
+        self.material_weight = float(material_weight)
+
+    def __call__(self, board):
+        return (
+            (1.0 - self.material_weight) * self.value_evaluator(board)
+            + self.material_weight * material_evaluate(board)
+        )
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--misty", required=True)
+    ap.add_argument("--candidate-mode", choices=["champion", "material", "hybrid"], default="champion")
     ap.add_argument("--champion", default="models/champion.nnue")
     ap.add_argument("--pairs", type=int, default=1)
     ap.add_argument("--node-budget", type=int, default=500)
@@ -86,10 +100,16 @@ def main():
     if args.pairs < 1 or args.node_budget < 1 or args.max_seconds <= 0:
         ap.error("invalid paired experiment settings")
     torch.set_num_threads(1)
-    model = ModelEvaluator(load_model_file(args.champion))
+    champion = ModelEvaluator(load_model_file(args.champion))
+    model = (
+        material_evaluate if args.candidate_mode == "material" else
+        HybridEvaluator(champion) if args.candidate_mode == "hybrid" else
+        champion
+    )
     started = time.monotonic()
     report = benchmark(model, args.misty, args.pairs, args.node_budget, args.max_seconds, args.seed)
     report["wall_seconds"] = round(time.monotonic() - started, 1)
+    report["candidate_mode"] = args.candidate_mode
     Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print("[External Arena] " + json.dumps(report), flush=True)
 

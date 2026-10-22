@@ -58,3 +58,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 ## 驗證報告與模型部署
 
 正式 `train.yml` 每次 SPRT 會輸出 `sprt_results.json`（配對局數、逐對比分、LLR、決策與參數），由 Action 保存為 artifact。只有 `ACCEPT_H1` 才會提交新 Champion 權重，並透過 GitHub Actions API 主動派送 `deploy_pages.yml` 對外更新網頁；`UNDECIDED` 或 `ACCEPT_H0` 保留既有權重，不假裝日更進步。正式評估每一步上限改為 0.10 秒，200 pairs，目的使 CPU Job 在 6 小時期限內可控。
+
+### 棋力弱點實測與對照實驗
+
+2026-10-22 已完成第一次 Rust MistyBanqi 配對實戰：現任 NNUE Champion 兩對四局僅獲 **0.5/4 分（12.5%）**，可在 GitHub Actions [39757428996](https://github.com/hub-google/DarkChess-NNUE/actions/runs/39757428996) 核對；四局樣本量不代表真實 Elo。搜尋中的 material bootstrap 曾對炮估值與車同級（5:5），已參考有外部競技數據的角色價值排序調整為 **炮 16、車 9**（王30／士14／象11／馬7／兵4）；這不會直接竄改既有 Champion NNUE。外部競技場現在同底牌比較 Champion／修正後純物質評估／75% Champion+25% material 的 Hybrid，**只作實驗，不會因少量比賽自動更換 Champion**。

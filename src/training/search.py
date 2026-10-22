@@ -24,8 +24,13 @@ class SearchResult:
     depth: int = 0
 
 
+# Former bootstrap weights undervalued the cannon relative to the chariot.
+# Tuned public-material baseline, based on the independently evaluated
+# MistyBanqi role ordering (MIT project, pinned benchmark in CI).
+# These weights apply to the fallback & bootstrap only; champion NNUE is not
+# modified without independent matched-deal validation.
 PIECE_VALUES = np.array(
-    [12.0, 7.0, 6.0, 5.0, 4.0, 5.0, 2.0] * 2,
+    [30.0, 14.0, 11.0, 9.0, 7.0, 16.0, 4.0] * 2,
     dtype=np.float32,
 )
 
