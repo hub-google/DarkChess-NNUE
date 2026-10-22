@@ -60,11 +60,14 @@ def list_staging_files(api):
                 )
                 if getattr(entry, "path", "").endswith(".jsonl.gz")
             ]
-        except Exception as error:
-            # Missing date partitions are normal when a worker produced no game.
-            if "404" not in str(error) and "not found" not in str(error).lower():
-                print(f"   Warning: could not list {path}: {error}")
+        except EntryNotFoundError:
+            # A worker directory may not exist yet; this is not an error.
             return []
+        except Exception:
+            # 401/403, transient API errors and repository disappearance are
+            # NOT empty directories: abort instead of consolidating a partial
+            # snapshot while silently missing uploads.
+            raise
 
     files = []
     with ThreadPoolExecutor(max_workers=8) as executor:

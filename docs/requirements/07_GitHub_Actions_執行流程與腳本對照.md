@@ -246,3 +246,11 @@ export frontend model
 - `external_arena.yml`：Rust/MIT MistyBanqi 固定版本的獨立引擎；在 GitHub CPU 編譯，以 UCI 公共盤面和本專案 Champion 同底牌交換先後配對對弈，驗收合法走法及可重現結果，並保留 JSON artifact。
 
 - 正式訓練 `SPRT` 產生 `sprt_results.json` 保留於 GitHub Artifact；只有 `ACCEPT_H1` 才更新 Champion，並自動 `gh workflow run deploy_pages.yml`，使通過驗證的新模型真正反映於 GitHub Pages。每步 CPU deadline 設為 0.10 秒以降低 6 小時 Job 超限風險。
+
+## 十一、真正自動循環（2026-10-22）
+
+- `self_play.yml`：每 6 小時 UTC 第 17 分自動啟動，4 Worker × 55 分鐘，現有 `concurrency: self-play` 保護同時只跑一個矩陣；原本 15 Worker 只留給 `workflow_dispatch` 大型作業。
+- `train_after_self_play.yml`：自動 Self-play 成功結束後以 `workflow_run` 發送 `train.yml` 的 `workflow_dispatch`，失敗不啟動訓練；每次的自動作業完成後下一輪由 GitHub cron 觸發，不需人工手動執行。
+- `train.yml`：登入 HF Private Dataset 下載 replay；`replay_gate.py` 低於 1000 局時以 `ready=false` **成功略過**昂貴訓練，留待下一次排程；到達 1000 局才進行完整資料合法性驗證、CPU Value/Policy 訓練與 SPRT；H1 才會晉升。跨多個排程累積，不會因訓練門檻未達就停止。
+- `monthly_activity.yml`：每月建立空 Git commit（內容不變）維持公共 Repo 活動，降低 GitHub Actions 的 60 天無活動停用排程風險。
+- `autonomous_loop_acceptance.yml`：測試上述自動化契約以及能否用原本 HF_TOKEN 存取私有 Dataset。**自動運作不保證必然棋力提升**，仍以有統計意義的 H1 與獨立對手評估。

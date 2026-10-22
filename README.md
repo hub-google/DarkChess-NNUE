@@ -70,3 +70,27 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 ### 擴大外部配對測試
 
 已成功跑過同底牌兩對四局的外部基準，得分率：NNUE Champion 12.5%、修正後純 material 50%、hybrid 25%。因只有四局不採用這組結果直接更換 Champion。已擴大 `external_arena.yml` 至 **每候選方案 20 對、40 局**（三種共 120 局），保留相同 seed、相同 CPU 節點及時間上限的試驗。此舉對照修正後 bootstrap 是否能有較穩定收益，並避免用自我對弈 Elo 取代外部衡量。
+
+## 真正的 GitHub 全自動自我訓練（2026-10-22 更新）
+
+**不需再人工定期執行 Action**：`self_play.yml` 已開啟 `17 */6 * * *` UTC GitHub Actions schedule。每六小時的自動循環使用 4 個 CPU Worker，每人約 55 分鐘；手動模式仍可使用原先 15 個 Worker 與長時段測試。GitHub 可能延遲或取消 cron 工作，當 Repo 未提供執行配額或 HF Token 失效時也不會偷偷假報成功。
+
+```text
+GitHub scheduled self_play.yml (4 CPU workers × 55 minutes, every 6h)
+    -> public-information Star1 self-play vs champion / archived / material baseline
+    -> complete terminal replays -> private HF staging
+    -> workflow_run completion triggers train_after_self_play.yml
+    -> GitHub workflow_dispatch triggers train.yml
+    -> consolidate HF staging with cutoff and dedup
+    -> download private HF replay using HF_TOKEN
+    -> replay_gate: < 1000 games => successful SKIP; next scheduled cycle accumulates
+                    >= 1000 games => validate cache, reanalyse hard positions
+    -> train Value NNUE + experimental Policy
+    -> paired SPRT (only ACCEPT_H1 can promote)
+    -> on promotion: archive old model -> commit new model -> deploy Pages
+    -> next 6h scheduled self-play automatically uses latest champion
+```
+
+每六小時的 schedule 是自動的循環來源，因此不必在訓練完成時同步啟動另一批 15 Worker，也不會遞迴爆量啟動。前者是一個**架構已串接的自動執行能力**；「棋力是否提升」仍取決於實際 SPRT 結果及外部競技場，沒有數學上的必然進步保證。
+
+`monthly_activity.yml` 每月建立一筆**空 Commit（不增加檔案）**，避免 GitHub 長期沒有儲存庫活動後將 schedule 自動停用。這不會啟動新一輪生產訓練。`autonomous_loop_acceptance.yml` 對 GitHub 的排程契約、HF 真實存取與少於 1,000 局跳過訓練做回歸測試。原先一次性 15 Worker Action 不會被重複派送。

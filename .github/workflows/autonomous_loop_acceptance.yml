@@ -1,0 +1,58 @@
+name: Autonomous self-play training loop acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/autonomous_loop_acceptance.yml'
+      - 'src/training/replay_gate.py'
+      - 'test/test_autonomous_loop.py'
+      - '.github/workflows/self_play.yml'
+      - '.github/workflows/train.yml'
+      - '.github/workflows/train_after_self_play.yml'
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Strict Python tests and automation contract
+        run: python -m unittest discover -s test -p 'test_*.py' -v
+      - name: Test real HF_TOKEN access without writing private game data
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          token = os.getenv("HF_TOKEN")
+          if not token:
+              raise RuntimeError("HF_TOKEN is missing; autonomous data storage cannot work")
+          info = HfApi(token=token).repo_info(
+              "hub-google/DarkChess-NNUE-Data", repo_type="dataset"
+          )
+          print("[Autonomy] Private HF dataset accessible:", info.sha)
+          PY
+      - name: Test replay accumulation gate on a tiny real gzip file
+        run: |
+          mkdir -p /tmp/darkchess-replay-acceptance
+          python - <<'PY'
+          import gzip
+          with gzip.open('/tmp/darkchess-replay-acceptance/tiny.jsonl.gz', 'wt') as f:
+              f.write('{"id":"game-1"}\n')
+          PY
+          python -u src/training/replay_gate.py \
+            --replay /tmp/darkchess-replay-acceptance/tiny.jsonl.gz \
+            --minimum 1000 \
+            --github-output /tmp/darkchess-replay-acceptance/gate.txt
+          grep -qx 'ready=false' /tmp/darkchess-replay-acceptance/gate.txt
+          grep -qx 'replay_games=1' /tmp/darkchess-replay-acceptance/gate.txt
