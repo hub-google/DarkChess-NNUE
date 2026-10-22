@@ -47,3 +47,6 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 本次另提供 `run_full_production_once.yml`：先跑 CPU correctness tests，再以 `workflow_dispatch` 啟動現有 15-worker `self_play.yml` 的**一次**正式資料生成；`train_after_self_play.yml` 只在生產 Self-play 成功結束時觸發一次 `train.yml`。正式自動 cron 仍停用。正式 training 至少要有 **1000 局有效棋譜**，通過配對 SPRT 才能替換 Champion；不足會失敗而非假裝有進步。
 
 注意：完整生產流程的 Action 可能需要數小時；Action 被接受／啟動不等於已訓練成功，更不代表世界排名已獲證明。
+## 網頁端機率搜尋（2026-10-22）
+
+`frontend/src/engine/search.ts` 提供以公開盤面估值的 CPU 受限 Star1-style 翻牌機率搜尋，可結合瀏覽器 NNUE；`App.tsx` 已改為使用 `chooseSearchedMove`，不再使用原本只有簡化走法選擇／隨機翻棋的 UI 策略。JS 搜尋與 Python 的完整 Transposition Table、增量 NNUE、Tablebase **並非完全同一核心**，棋力尚須獨立對戰驗證。正式 NNUE+Policy 訓練仍以 Python 實作為準。

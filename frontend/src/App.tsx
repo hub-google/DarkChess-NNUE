@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BoardView } from './components/Board'
 import { Sidebar } from './components/Sidebar'
-import { Board, chooseAiMove, Color, colorOf, Piece } from './engine/board'
+import { Board, Color, colorOf, Piece } from './engine/board'
+import { chooseSearchedMove } from './engine/search'
 import { BrowserNNUE, loadChampion } from './engine/nnue'
 import './App.css'
 
@@ -53,7 +54,7 @@ function App() {
     const timer = window.setTimeout(() => {
       if (cancelled) return
       const current = gameRef.current
-      const move = chooseAiMove(current, model ? board => model.evaluate(board) : undefined)
+      const move = chooseSearchedMove(current, model ? board => model.evaluate(board) : undefined)
       if (move) current.play(move)
       setThinking(false)
       refresh()
