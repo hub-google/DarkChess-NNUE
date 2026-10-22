@@ -50,7 +50,7 @@ def validate_record(record):
     terminal, result = board.is_game_over()
     if not terminal or float(record["res"]) != float(result):
         raise ValueError("record is not a completed terminal game")
-     return len(moves)
+    return len(moves)
 
 
 def validate_directory(directory):
