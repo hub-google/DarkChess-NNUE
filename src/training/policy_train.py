@@ -40,12 +40,36 @@ def transform_actions(actions, symmetry):
     return transformed
 
 
-def policy_loss(logits, actions, probabilities):
-    """Soft cross entropy with padding excluded, over the 1024 action IDs."""
-    mask = actions >= 0
+def transform_legal_mask(packed_bits, symmetry):
+    """Return 1024 legal-action flags after the same geometric augmentation."""
+    flags = np.unpackbits(np.asarray(packed_bits, dtype=np.uint8), bitorder="little").astype(bool)
+    if flags.shape != (1024,):
+        raise ValueError("legal mask must contain exactly 1024 actions")
+    result = np.zeros(1024, dtype=np.bool_)
+    if not np.any(flags):
+        raise ValueError("training position has no legal moves")
+    result[transform_actions(np.flatnonzero(flags), symmetry)] = True
+    return result
+
+
+def policy_loss(logits, actions, probabilities, legal_mask=None):
+    """Soft cross entropy normalized only over legal actions.
+
+    Padding and all illegal moves are excluded from the partition function,
+    otherwise the policy could waste capacity on 1000 impossible action IDs.
+    """
+    teacher_mask = actions >= 0
     safe_actions = actions.clamp(min=0)
+    if legal_mask is not None:
+        if legal_mask.shape != logits.shape:
+            raise ValueError("legal mask/logits shape mismatch")
+        if not bool(legal_mask.any(dim=1).all().item()):
+            raise ValueError("legal mask has an empty sample")
+        if bool((teacher_mask & ~legal_mask.gather(1, safe_actions)).any().item()):
+            raise ValueError("policy teacher contains illegal actions")
+        logits = logits.masked_fill(~legal_mask, -1e9)
     selected_logp = F.log_softmax(logits, dim=1).gather(1, safe_actions)
-    mass = probabilities * mask.to(probabilities.dtype)
+    mass = probabilities * teacher_mask.to(probabilities.dtype)
     mass = mass / mass.sum(dim=1, keepdim=True).clamp(min=1e-6)
     return -(mass * selected_logp).sum(dim=1).mean()
 
@@ -69,7 +93,8 @@ def train(cache_dir, champion, challenger, epochs=1, max_samples=100000, batch_s
             break
         for path in cache_files:
             with np.load(path) as shard:
-                if "policy_actions" not in shard or "policy_probs" not in shard:
+                if "policy_actions" not in shard or "policy_probs" not in shard or "legal_action_bits" not in shard:
+                    print(f"[Policy] Skipping legacy cache without legal masks: {path}")
                     continue
                 probs = shard["policy_probs"]
                 order = np.flatnonzero(probs.sum(axis=1) > 0)
@@ -81,6 +106,7 @@ def train(cache_dir, champion, challenger, epochs=1, max_samples=100000, batch_s
                     x = []
                     actions = []
                     weights = []
+                    legal_masks = []
                     for index in subset:
                         feat = shard["features"][index].astype(np.float32)
                         symmetry = int(rng.integers(0, 4))
@@ -91,6 +117,7 @@ def train(cache_dir, champion, challenger, epochs=1, max_samples=100000, batch_s
                         x.append(transformed)
                         actions.append(transform_actions(shard["policy_actions"][index], symmetry))
                         weights.append(shard["policy_probs"][index].astype(np.float32))
+                        legal_masks.append(transform_legal_mask(shard["legal_action_bits"][index], symmetry))
                     if not x:
                         continue
                     optimizer.zero_grad()
@@ -99,6 +126,7 @@ def train(cache_dir, champion, challenger, epochs=1, max_samples=100000, batch_s
                         logits,
                         torch.from_numpy(np.stack(actions)),
                         torch.from_numpy(np.stack(weights)),
+                        torch.from_numpy(np.stack(legal_masks)),
                     )
                     loss.backward()
                     optimizer.step()

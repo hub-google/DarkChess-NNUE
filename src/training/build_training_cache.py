@@ -89,6 +89,7 @@ class CacheShardWriter:
             source_model=np.asarray([row["source_model"] for row in self._rows], dtype="S64"),
             policy_actions=np.asarray([row["policy_actions"] for row in self._rows], dtype=np.int16),
             policy_probs=np.asarray([row["policy_probs"] for row in self._rows], dtype=np.float16),
+            legal_action_bits=np.asarray([row["legal_action_bits"] for row in self._rows], dtype=np.uint8),
         )
         self.total_samples += len(self._rows)
         self.shard_index += 1
@@ -174,6 +175,9 @@ def build_base_cache(files, output_dir, max_positions, max_samples, shard_size, 
                             if policy and abs(sum(float(row[1]) for row in policy) - 1) > 0.001:
                                 raise ValueError("policy teacher is not normalized")
                             legal = set(int(m) for m in board.generate_legal_moves())
+                            legal_action_bits = np.zeros(128, dtype=np.uint8)
+                            for action in legal:
+                                legal_action_bits[action // 8] |= (1 << (action % 8))
                             if any(int(move) not in legal for move, _ in policy):
                                 raise ValueError("policy teacher contains an illegal move")
                             policy_actions = [int(move) for move, _ in policy] + [-1] * (16 - len(policy))
@@ -193,6 +197,7 @@ def build_base_cache(files, output_dir, max_positions, max_samples, shard_size, 
                                     "priority": abs(q_old - v_old) if q_valid else 0.0,
                                     "policy_actions": policy_actions,
                                     "policy_probs": policy_probs,
+                                    "legal_action_bits": legal_action_bits,
                                     "sample_index": sample_index,
                                     "game_ts": int(game.get("ts", 0)),
                                     "ply": ply,

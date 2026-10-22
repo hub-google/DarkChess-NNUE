@@ -438,6 +438,13 @@ class ChanceSearch:
         self.chance_cutoffs = 0
         self.cache.clear()
         self._bind_evaluator(board)
+        # Never let a user-selected opening depth create an unbounded search.
+        # Opening has no established color and depth-1 already evaluates all
+        # public flip outcomes. The engine may explicitly benchmark deeper
+        # opening search separately, but production always uses this bound.
+        if self.max_depth > 1 and (self.node_budget is None or self.max_seconds is None):
+            raise ValueError("opening search deeper than one needs BOTH node and time budgets")
+        self._deadline = time.perf_counter() + self.max_seconds if self.max_seconds is not None else None
         moves = _ordered_moves(board, board.generate_legal_moves())
         groups = _opening_symmetry_groups(moves)
         search_moves = [group[0] for group in groups]

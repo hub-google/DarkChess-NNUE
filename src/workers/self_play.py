@@ -244,6 +244,8 @@ def play_game(
     opening = ChanceSearch(
         evaluator=evaluator,
         max_depth=opening_depth,
+        node_budget=int(os.environ.get("OPENING_NODE_BUDGET", "1500")),
+        max_seconds=per_move_seconds(),
     ).analyze_first_flip(board)
     opening_seconds = time.perf_counter() - search_started
     total_nodes += opening.nodes
