@@ -76,6 +76,17 @@ def initialize_challenger(champion_path):
     print(f"Upgraded legacy champion from {LEGACY_INPUT_SIZE} to {CURRENT_INPUT_SIZE} inputs.")
     return model
 
+
+def value_target(result, root_value=None, search_depth=None, search_weight=0.5):
+    """Never use a heuristic depth-zero fallback as a search teacher."""
+    weight = float(search_weight)
+    if not 0.0 <= weight <= 1.0:
+        raise ValueError("search_weight must be between 0 and 1")
+    if root_value is None or search_depth == 0:
+        return float(result)
+    return (1.0 - weight) * float(result) + weight * float(root_value)
+
+
 # --- TD-Learning Loss ---
 def td_loss(predictions, absolute_results):
     """
@@ -200,6 +211,7 @@ def select_training_plies(game, moves, max_positions):
     game_rng = np.random.default_rng(seed)
     root_values = game.get("q")
     static_values = game.get("v")
+    search_depths = game.get("qd")
 
     if (
         isinstance(root_values, list)
@@ -209,7 +221,8 @@ def select_training_plies(game, moves, max_positions):
     ):
         hard_count = max(1, max_positions // 2)
         ranked = sorted(
-            (int(ply) for ply in eligible),
+            (int(ply) for ply in eligible
+             if search_depths is None or int(search_depths[ply]) > 0),
             key=lambda ply: abs(float(root_values[ply]) - float(static_values[ply])),
             reverse=True,
         )
@@ -372,7 +385,12 @@ class DarkChessDataset(IterableDataset):
                                         root_value = float(root_values[ply])
                                         if not -1.0 <= root_value <= 1.0:
                                             raise ValueError(f"invalid root value: {root_value}")
-                                        target = 0.5 * res + 0.5 * root_value
+                                        depths = game.get("qd")
+                                        depth = int(depths[ply]) if depths is not None else None
+                                        target = value_target(
+                                            res, root_value, depth,
+                                            float(os.environ.get("Q_TARGET_WEIGHT", "0.5"))
+                                        )
                                     feat = extract_features(board, self.input_size)
                                     transform = (
                                         int(rng.integers(0, SYMMETRY_COUNT))

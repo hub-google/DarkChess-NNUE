@@ -87,6 +87,17 @@ jobs:
           TRAINING_CACHE_DIR: "training_cache"
         run: python -u src/training/train.py
 
+      - name: Train optional Policy teacher head on CPU
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/training/policy_train.py \
+            --cache-dir training_cache \
+            --champion models/champion.policy \
+            --challenger models/challenger.policy \
+            --epochs 1 \
+            --max-samples 100000
+
       - name: Validate challenger against champion
         id: validate
         env:
@@ -114,6 +125,9 @@ jobs:
           fi
 
           mv models/challenger.nnue models/champion.nnue
+          if [ -f models/challenger.policy ]; then
+            mv models/challenger.policy models/champion.policy
+          fi
 
           mapfile -t ARCHIVES < <(find models/archive -maxdepth 1 -type f -name 'champion-*.nnue' | sort -r)
           if [ "${#ARCHIVES[@]}" -gt "$RECENT_CHAMPIONS" ]; then
@@ -126,6 +140,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add models/champion.nnue models/archive/ frontend/public/models/
+          if [ -f models/champion.policy ]; then git add models/champion.policy; fi
           if ! git diff --staged --quiet; then
             git commit -m "chore: promote validated NNUE champion"
             git push

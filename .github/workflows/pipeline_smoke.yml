@@ -70,6 +70,16 @@ jobs:
           MAX_TRAINING_SAMPLES: "2000000"
         run: python -u src/training/train.py
 
+      - name: Train lightweight policy teacher and verify checkpoint
+        run: |
+          python -u src/training/policy_train.py \
+            --cache-dir training_cache \
+            --champion models/champion.policy \
+            --challenger models/challenger.policy \
+            --epochs 1 \
+            --max-samples 16
+          test -s models/challenger.policy
+
       - name: Run a minimal paired validation
         env:
           TORCH_NUM_THREADS: "1"
@@ -99,4 +109,5 @@ jobs:
           path: |
             training_cache/manifest.json
             smoke_export/champion.json
+            models/challenger.policy
           retention-days: 7

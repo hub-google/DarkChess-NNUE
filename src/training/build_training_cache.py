@@ -19,6 +19,7 @@ from train import (
     extract_features,
     load_model_file,
     select_training_plies,
+    value_target,
 )
 
 
@@ -44,6 +45,12 @@ def _valid_game_header(game):
         return False
     root_values = game.get("q")
     static_values = game.get("v")
+    depths = game.get("qd")
+    policies = game.get("pi")
+    if depths is not None and len(depths) != len(moves):
+        return False
+    if policies is not None and len(policies) != len(moves):
+        return False
     if root_values is not None and len(root_values) != len(moves):
         return False
     if static_values is not None and len(static_values) != len(moves):
@@ -80,6 +87,8 @@ class CacheShardWriter:
             game_ts=np.asarray([row["game_ts"] for row in self._rows], dtype=np.int64),
             ply=np.asarray([row["ply"] for row in self._rows], dtype=np.int16),
             source_model=np.asarray([row["source_model"] for row in self._rows], dtype="S64"),
+            policy_actions=np.asarray([row["policy_actions"] for row in self._rows], dtype=np.int16),
+            policy_probs=np.asarray([row["policy_probs"] for row in self._rows], dtype=np.float16),
         )
         self.total_samples += len(self._rows)
         self.shard_index += 1
@@ -129,6 +138,8 @@ def build_base_cache(files, output_dir, max_positions, max_samples, shard_size, 
 
                     root_values = game.get("q")
                     static_values = game.get("v")
+                    search_depths = game.get("qd")
+                    search_policies = game.get("pi")
                     board = DarkChessBoardPy(bag=game["hid"])
                     pending_rows = []
 
@@ -148,11 +159,25 @@ def build_base_cache(files, output_dir, max_positions, max_samples, shard_size, 
                                 raise ValueError(f"invalid q at ply {ply}: {q_old}")
                             if not -1.0 <= v_old <= 1.0:
                                 raise ValueError(f"invalid v at ply {ply}: {v_old}")
-                            target = (
-                                0.5 * result + 0.5 * q_old
-                                if root_values is not None
-                                else result
+                            q_valid = (root_values is not None and
+                                       (search_depths is None or int(search_depths[ply]) > 0))
+                            target = value_target(
+                                result,
+                                q_old if root_values is not None else None,
+                                int(search_depths[ply]) if search_depths is not None else None,
+                                float(os.environ.get("Q_TARGET_WEIGHT", "0.5")),
                             )
+                            policy = (search_policies[ply] if search_policies is not None and
+                                      q_valid else [])
+                            if len(policy) > 16:
+                                raise ValueError("policy teacher exceeds 16 entries")
+                            if policy and abs(sum(float(row[1]) for row in policy) - 1) > 0.001:
+                                raise ValueError("policy teacher is not normalized")
+                            legal = set(int(m) for m in board.generate_legal_moves())
+                            if any(int(move) not in legal for move, _ in policy):
+                                raise ValueError("policy teacher contains an illegal move")
+                            policy_actions = [int(move) for move, _ in policy] + [-1] * (16 - len(policy))
+                            policy_probs = [float(prob) for _, prob in policy] + [0.0] * (16 - len(policy))
                             source_model = game.get("model", "unknown")
                             if board.side_to_move == 0:
                                 source_model = game.get("red_model", source_model)
@@ -165,7 +190,9 @@ def build_base_cache(files, output_dir, max_positions, max_samples, shard_size, 
                                     "target": float(target),
                                     "q": q_old,
                                     "v": v_old,
-                                    "priority": abs(q_old - v_old),
+                                    "priority": abs(q_old - v_old) if q_valid else 0.0,
+                                    "policy_actions": policy_actions,
+                                    "policy_probs": policy_probs,
                                     "sample_index": sample_index,
                                     "game_ts": int(game.get("ts", 0)),
                                     "ply": ply,
@@ -186,7 +213,7 @@ def build_base_cache(files, output_dir, max_positions, max_samples, shard_size, 
                         if writer.total_samples + len(writer._rows) >= max_samples:
                             break
                         writer.add(row)
-                        if root_values is None:
+                        if root_values is None or (search_depths is not None and int(search_depths[row["ply"]]) == 0):
                             continue
                         record = {
                             "game_id": str(game["id"]),
@@ -294,9 +321,16 @@ def _reanalyze_selected(files, ranked, evaluator, depth, node_budget):
                     evaluator=evaluator,
                     max_depth=depth,
                     node_budget=node_budget,
+                    max_seconds=float(os.environ.get("REANALYSIS_MAX_SECONDS", "4")),
                 ).analyze(board)
+                if analysis.depth == 0:
+                    board.make_move(int(move), validate=True)
+                    continue
                 q_new = float(analysis.value)
-                target_new = 0.5 * float(record["result"]) + 0.5 * q_new
+                target_new = value_target(
+                    float(record["result"]), q_new,
+                    analysis.depth, float(os.environ.get("Q_TARGET_WEIGHT", "0.5")),
+                )
                 overrides.append(
                     (
                         int(record["sample_index"]),

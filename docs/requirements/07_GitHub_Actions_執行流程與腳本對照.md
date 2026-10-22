@@ -7,7 +7,8 @@
 | Workflow | 目前觸發方式 | 主要用途 |
 | --- | --- | --- |
 | `ci.yml` | push master / PR master / manual | Python unit tests |
-| `pipeline_smoke.yml` | 指定 training 相關檔案 push / manual | 完整跑 1 局 self-play → cache/reanalysis → tiny train → paired validation → export |
+| `pipeline_smoke.yml` | 指定 training 相關檔案 push / manual | 完整跑 1 局 self-play → cache/reanalysis → tiny value/policy train → paired validation → export |
+| `self_play_trial.yml` | 搜尋/對弈程式 push / manual | **真實完成 2 局棋，檢查合法終局、教師機率與棋譜筆數，輸出 artifact；不寫 HF** |
 | `benchmark.yml` | 指定搜尋/模型檔案 push / manual | CPU search benchmark，輸出 artifact |
 | `self_play.yml` | **manual only** | 15 個 CPU Worker 產生 replay 並上傳 HF staging |
 | `train.yml` | **manual only** | consolidate → cache/reanalysis → train → SPRT → promotion |
@@ -30,6 +31,8 @@
 - PyTorch：CPU-only wheel
 - Job timeout：355 分鐘
 - 單次 generation budget：21,000 秒（5 小時 50 分）
+- 單步預設 deadline：3 秒，預設搜尋節點限制 early=500、mid=1200、late=2500；在完整棋局 Benchmark 證明可行前不得恢復高額度。
+- 若失去深度一的搜尋結果，產生 `qd=0` 合法走法；它只能當結果學習資料、不可當 Policy 教師。
 
 自動 `0 */6 * * *` cron 仍留在檔案註解中，**目前不會執行**。
 
@@ -73,18 +76,19 @@ Trigger：`workflow_dispatch`。原本每日 UTC 19:00（台灣次日 03:00）�
    - 寫入 `reanalysis_overrides.npz`
    - 寫入 `manifest.json`
 7. 執行 `src/training/train.py`，從 champion 續訓產生 `models/challenger.nnue`。
-8. 執行 `src/training/sprt_validation.py`：
+8. 執行 `src/training/policy_train.py`，使用搜尋教師 softmax 訓練獨立 CPU Policy Head；沒有新格式教師資料時略過。
+9. 執行 `src/training/sprt_validation.py`：
    - 最多 400 pairs
    - depth 8
    - node budget 20,000
    - Elo bounds -15 / +15
-9. 僅在 validation 設定 `passed=true` 時：
+10. 僅在 validation 設定 `passed=true` 時：
    - 封存舊 champion
-   - challenger → champion
+   - challenger Value NNUE → champion NNUE；若已有 challenger Policy，亦一起保存為 champion Policy（Policy 尚未參與正式搜尋）
    - 保留近期 archive champions
    - export 前端模型
    - commit + push
-10. H0、未決或驗證失敗：保留既有 champion。
+11. H0、未決或驗證失敗：保留既有 champion。
 
 ### 資料並行安全
 
@@ -103,7 +107,7 @@ Training 與 self-play 使用不同 concurrency group，可以同時執行。con
   ↓
 binary cache + small reanalysis
   ↓
-1-epoch tiny challenger
+1-epoch tiny Value challenger + optional Policy challenger
   ↓
 1-pair validation
   ↓
@@ -113,6 +117,10 @@ export champion.bin / champion.json
 它驗證的不只是單一函式，而是 replay 格式、board replay、cache、reanalysis、training、SPRT、export 之間能真正串起來。
 
 ---
+
+### `self_play_trial.yml`：完整對弈實測
+
+與只測一局的 pipeline smoke 分開，固定 CPU-only 裝置與安全預算，實際執行 **2 局**，並用 `validate_replay.py` 重播每一步確認終局與資料正確性，必須累積至少 2 筆有效棋譜才成功。此 workflow 不會接觸 Hugging Face 權杖，也不會改動真實 replay buffer。
 
 ## 五、 `benchmark.yml`：CPU 搜尋效能驗收
 
