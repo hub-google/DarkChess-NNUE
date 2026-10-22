@@ -12,10 +12,10 @@
 | `hf_production_trial.yml` | 單次 push / manual | 一局真實 CPU 對弈 → 終局驗證 → HF staging 上傳 → 從 HF 回讀再驗證；不晉升模型 |
 | `arena.yml` | 指定程式 push / manual | Champion vs material baseline 配對競技場，輸出 JSON 與 artifact |
 | `benchmark.yml` | 指定搜尋/模型檔案 push / manual | CPU search benchmark，輸出 artifact |
-| `self_play.yml` | **manual only** | 15 個 CPU Worker 產生 replay 並上傳 HF staging |
-| `train.yml` | **manual only** | consolidate → cache/reanalysis → train → SPRT → promotion |
-| `deploy_pages.yml` | **manual only** | 前端測試、build、部署 GitHub Pages |
-| `publish_training_status.yml` | **manual only** | 從 HF 讀取安全統計並更新前端 training-status |
+| `self_play.yml` | 每六小時 schedule／manual | 排程 4 個 CPU Worker × 55 分鐘；手動 15 個 CPU Worker，合法 replay 上傳 HF staging |
+| `train.yml` | 每日 03:41 UTC schedule／manual | consolidate → replay 門檻 → cache/reanalysis → train → SPRT → promotion |
+| `deploy_pages.yml` | 前端 push／manual／正式晉升後派送 | 前端測試、build、部署 GitHub Pages |
+| `publish_training_status.yml` | workflow_run／manual／設定更新 push | 從 HF 讀取安全統計並更新前端 training-status |
 | `reset_replay_data.yml` | **manual + confirmation** | 新規則版本時清除舊 replay/staging |
 
 `train.yml.bak` 只是備份檔，不是 GitHub Actions workflow。
@@ -167,7 +167,7 @@ export champion.bin / champion.json
 
 ### `deploy_pages.yml`
 
-目前 **manual only**。
+目前 **每日 03:41 UTC 排程／manual**；訓練資料不足門檻時成功略過，保留既有 Champion。
 
 執行：
 
@@ -182,7 +182,7 @@ export champion.bin / champion.json
 
 ### `publish_training_status.yml`
 
-目前 **manual only**。讀取 HF Dataset 後，只把可公開的安全統計寫入 `frontend/public/training-status.json`，有變更才 commit。
+目前 **workflow_run（正式對弈／訓練完成）或 manual**。讀取 HF Dataset 後，只把可公開的安全統計寫入 `frontend/public/training-status.json`，有變更才 commit 並派送 Pages 部署。
 
 ---
 

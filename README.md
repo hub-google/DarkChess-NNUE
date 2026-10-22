@@ -19,12 +19,14 @@ CPU-only 台灣暗棋研究專案：**NNUE Value + Star1 chance search + self-pl
 | `pipeline_smoke.yml` | 指定變更 push / manual | 真實 1 局 → cache → Value/Policy 訓練 → Policy 引導 1 局 → SPRT |
 | `self_play_trial.yml` | 指定變更 push / manual | 實際兩局完整對弈 + 終局驗證 + Artifact，無 HF 寫入 |
 | `benchmark.yml` | 搜尋相關 push / manual | 搜尋與完整棋局 CPU throughput |
-| `self_play.yml` | **manual only** | 15 CPU Worker 正式 HF staging |
+| `self_play.yml` | 每 6 小時排程 / manual | 自動 4 CPU Worker × 55 分鐘；手動 15 Worker |
+| `train_after_self_play.yml` | 手動 Self-play 成功結束 | 派送完整 training workflow |
+| `monthly_activity.yml` | 每月 1 日排程 / manual | 空 Commit 維護 Actions 排程活動 |
 | `hf_production_trial.yml` | push 一次／manual | 單 CPU Worker 產一局、驗證、HF 真正上傳並回讀，**不晉升模型** |
 | `arena.yml` | 指定變更 push／manual | Champion 與公開資訊 material baseline 成對對弈並輸出統計 |
-| `train.yml` | **manual only** | HF 合併 → Value/Policy 訓練 → SPRT → 條件式晉升 |
+| `train.yml` | 每日 03:41 UTC / manual | HF 合併 → 未滿千局正常略過 → Value/Policy 訓練 → SPRT → 晉升 |
 
-正式排程目前依先前要求暫停，不會因推送程式自動開始大量運算。啟動 `self_play.yml` / `train.yml` 需要 GitHub Actions 手動 Run workflow，以及可用的 `HF_TOKEN` secret。
+已啟用成本受控的 GitHub Actions 自主排程。私人 HF 資料仍需 `HF_TOKEN` GitHub Secret；排程可能受 GitHub 平台延遲、限額或儲存庫停用影響。
 
 ## 快速本地測試
 
@@ -44,7 +46,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 
 2026-10-22 已在原 HF 帳號、原 ID `hub-google/DarkChess-NNUE-Data` 重建缺失的**私人** dataset，並用 GitHub Action 真實對弈完成「上傳 → 回讀 → 終局重播」驗證；**已不存在的舊 replay 尚未復原**。見 [HF bootstrap 驗收](https://github.com/hub-google/DarkChess-NNUE/actions/runs/39755073316)。
 
-本次另提供 `run_full_production_once.yml`：先跑 CPU correctness tests，再以 `workflow_dispatch` 啟動現有 15-worker `self_play.yml` 的**一次**正式資料生成；`train_after_self_play.yml` 只在生產 Self-play 成功結束時觸發一次 `train.yml`。正式自動 cron 仍停用。正式 training 至少要有 **1000 局有效棋譜**，通過配對 SPRT 才能替換 Champion；不足會失敗而非假裝有進步。
+另保留 `run_full_production_once.yml`：先跑 CPU correctness tests，再以 `workflow_dispatch` 啟動現有 15-worker `self_play.yml` 的**一次**加速資料生成。常態任務採每 6 小時 4 Worker，正式 training 每天一次；至少要有 **1000 局有效棋譜**，不足就正常略過並繼續累積。通過配對 SPRT 的 Challenger 才能取代 Champion。
 
 注意：完整生產流程的 Action 可能需要數小時；Action 被接受／啟動不等於已訓練成功，更不代表世界排名已獲證明。
 ## 網頁端機率搜尋（2026-10-22）
@@ -65,7 +67,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 
 ## 網頁訓練統計與自動發布
 
-`publish_training_status.yml` 在 Self-play 或正式訓練 workflow 完成時更新 `frontend/public/training-status.json`；只掃描 HF Dataset `staging` 子樹與單一 canonical replay，而不是歷史資料全根目錄。若統計 JSON 真正改變，GitHub Actions 會 commit 然後主動 dispatch `deploy_pages.yml`，玩家看到的是有 `updatedAt` 時戳的公開彙總，而非直接讀私人 HF Dataset。所有正式 Self-play／train 的定時 cron 仍維持停用。
+`publish_training_status.yml` 在 Self-play 或正式訓練 workflow 完成時更新 `frontend/public/training-status.json`；只掃描 HF Dataset `staging` 子樹與單一 canonical replay，而不是歷史資料全根目錄。若統計 JSON 真正改變，GitHub Actions 會 commit 然後主動 dispatch `deploy_pages.yml`，玩家看到的是有 `updatedAt` 時戳的公開彙總，而非直接讀私人 HF Dataset。Self-play／train 的受控自動排程目前已啟用。
 
 ### 擴大外部配對測試
 
