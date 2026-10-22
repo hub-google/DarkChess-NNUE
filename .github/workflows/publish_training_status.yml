@@ -1,17 +1,17 @@
 name: Publish training status
 
-# Automatic workflows paused per user request
+# Update public counts after substantive batch completion, not on a cron.
 on:
-  # push:
-  #   branches: ["master"]
-  #   paths:
-  #     - '.github/workflows/publish_training_status.yml'
-  #     - '.github/scripts/publish_training_status.py'
-  # workflow_run:
-  #   workflows:
-  #     - Distributed belief-state self-play
-  #     - Train and promote NNUE
-  #   types: [completed]
+  workflow_run:
+    workflows:
+      - Distributed belief-state self-play
+      - Train and promote NNUE
+    types: [completed]
+  push:
+    branches: ["master"]
+    paths:
+      - '.github/workflows/publish_training_status.yml'
+      - '.github/scripts/publish_training_status.py'
   workflow_dispatch:
 
 concurrency:
@@ -20,6 +20,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   publish:
@@ -40,7 +41,9 @@ jobs:
           pip install "huggingface_hub>=0.27"
           python .github/scripts/publish_training_status.py
 
-      - name: Commit changed totals
+      - name: Commit totals and redeploy site if changed
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -48,4 +51,5 @@ jobs:
           if ! git diff --staged --quiet; then
             git commit -m "chore: refresh public training status"
             git push
+            gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
           fi

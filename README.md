@@ -62,3 +62,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 ### 棋力弱點實測與對照實驗
 
 2026-10-22 已完成第一次 Rust MistyBanqi 配對實戰：現任 NNUE Champion 兩對四局僅獲 **0.5/4 分（12.5%）**，可在 GitHub Actions [39757428996](https://github.com/hub-google/DarkChess-NNUE/actions/runs/39757428996) 核對；四局樣本量不代表真實 Elo。搜尋中的 material bootstrap 曾對炮估值與車同級（5:5），已參考有外部競技數據的角色價值排序調整為 **炮 16、車 9**（王30／士14／象11／馬7／兵4）；這不會直接竄改既有 Champion NNUE。外部競技場現在同底牌比較 Champion／修正後純物質評估／75% Champion+25% material 的 Hybrid，**只作實驗，不會因少量比賽自動更換 Champion**。
+
+## 網頁訓練統計與自動發布
+
+`publish_training_status.yml` 在 Self-play 或正式訓練 workflow 完成時更新 `frontend/public/training-status.json`；只掃描 HF Dataset `staging` 子樹與單一 canonical replay，而不是歷史資料全根目錄。若統計 JSON 真正改變，GitHub Actions 會 commit 然後主動 dispatch `deploy_pages.yml`，玩家看到的是有 `updatedAt` 時戳的公開彙總，而非直接讀私人 HF Dataset。所有正式 Self-play／train 的定時 cron 仍維持停用。

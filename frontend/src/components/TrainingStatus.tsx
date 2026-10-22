@@ -91,7 +91,7 @@ export function TrainingStatus() {
       <small>{summary ? relativeTime(summary.updatedAt) + '同步' : '安全連線中'}</small>
     </div>
 
-    <a className="metric-row" href="https://huggingface.co/datasets/hub-google/DarkChess-NNUE-Data" target="_blank" rel="noreferrer">
+    <a className="metric-row" href={`${REPO_URL}/actions/workflows/self_play.yml`} target="_blank" rel="noreferrer">
       <span><small>訓練資料</small><strong>{summary ? number.format(summary.totalGames) : '—'} <em>局</em></strong></span>
       <span className="metric-detail">{summary ? `${number.format(summary.replayGames)} 已整合 · ${number.format(summary.stagingGames)} 待整合` : '等待首次統計'}</span>
     </a>

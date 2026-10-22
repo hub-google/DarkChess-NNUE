@@ -4,10 +4,12 @@ import gzip
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 
@@ -23,28 +25,37 @@ def main() -> None:
         raise RuntimeError("HF_TOKEN is required")
 
     api = HfApi(token=token)
-    files = api.list_repo_files(repo_id=REPO_ID, repo_type="dataset")
+    # Listing the repo root also walks giant archival subtrees. List only the
+    # live staging folder and the known canonical replay path.
+    staged = [
+        entry.path for entry in api.list_repo_tree(
+            repo_id=REPO_ID, path_in_repo="staging",
+            recursive=True, repo_type="dataset",
+        ) if getattr(entry, "path", "").endswith(".jsonl.gz")
+    ]
     replay_games = 0
     staging_games = 0
-
     with tempfile.TemporaryDirectory() as temp_dir:
-        for name in files:
-            if name != "replay_buffer.jsonl.gz" and not (
-                name.startswith("staging/") and name.endswith(".jsonl.gz")
-            ):
-                continue
+        try:
             local = hf_hub_download(
-                repo_id=REPO_ID,
-                repo_type="dataset",
-                filename=name,
-                token=token,
+                repo_id=REPO_ID, repo_type="dataset",
+                filename="replay_buffer.jsonl.gz", token=token,
                 local_dir=temp_dir,
             )
-            games = count_lines(local)
-            if name == "replay_buffer.jsonl.gz":
-                replay_games = games
-            else:
-                staging_games += games
+            replay_games = count_lines(local)
+        except EntryNotFoundError:
+            print("[Training Status] No consolidated replay buffer yet.")
+
+        def read_batch(name):
+            local = hf_hub_download(
+                repo_id=REPO_ID, repo_type="dataset",
+                filename=name, token=token, local_dir=temp_dir,
+            )
+            return count_lines(local)
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            staging_games = sum(pool.map(read_batch, staged))
+        print(f"[Training Status] Counted {len(staged)} staging files.")
 
     summary = {
         "replayGames": replay_games,
