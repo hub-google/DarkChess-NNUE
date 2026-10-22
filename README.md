@@ -94,3 +94,5 @@ GitHub scheduled self_play.yml (4 CPU workers × 55 minutes, every 6h)
 每六小時的 schedule 是自動的循環來源，因此不必在訓練完成時同步啟動另一批 15 Worker，也不會遞迴爆量啟動。前者是一個**架構已串接的自動執行能力**；「棋力是否提升」仍取決於實際 SPRT 結果及外部競技場，沒有數學上的必然進步保證。
 
 `monthly_activity.yml` 每月建立一筆**空 Commit（不增加檔案）**，避免 GitHub 長期沒有儲存庫活動後將 schedule 自動停用。這不會啟動新一輪生產訓練。`autonomous_loop_acceptance.yml` 對 GitHub 的排程契約、HF 真實存取與少於 1,000 局跳過訓練做回歸測試。原先一次性 15 Worker Action 不會被重複派送。
+
+**自动循环实际验收**：`autonomous_loop_acceptance.yml` 已增加一次真实 `train.yml` dispatch（不额外启动 15 Worker），用来验证既有 GitHub Token 权限、HF staging 合并、私人 replay 下载与 `ready=false` 的安全略过行为。低于 1000 局时绝不训练或晋升；达到门槛会照正式流程执行，不以本次验收为由绕过 SPRT。

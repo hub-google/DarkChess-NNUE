@@ -37,44 +37,26 @@ def staging_timestamp(path):
 
 
 def list_staging_files(api):
-    """List all worker staging subtrees without walking the legacy repo root."""
-    # Historical workflows used workers 16-20, while the current workflow uses
-    # 1-15. Keep all of them visible until compaction cleanup is complete.
-    worker_count = int(os.environ.get("STAGING_WORKER_COUNT", "20"))
-    paths = [
-        f"staging/worker_{worker_id}"
-        for worker_id in range(1, worker_count + 1)
-    ]
-    # `fresh` is retained for compatibility with the previous uploader.
-    paths.append("staging/fresh")
+    """List the staging subtree once without silently hiding upload failures.
 
-    def list_path(path):
-        try:
-            return [
-                entry.path
-                for entry in api.list_repo_tree(
-                    repo_id=REPO_ID,
-                    path_in_repo=path,
-                    recursive=True,
-                    repo_type="dataset",
-                )
-                if getattr(entry, "path", "").endswith(".jsonl.gz")
-            ]
-        except EntryNotFoundError:
-            # A worker directory may not exist yet; this is not an error.
-            return []
-        except Exception:
-            # 401/403, transient API errors and repository disappearance are
-            # NOT empty directories: abort instead of consolidating a partial
-            # snapshot while silently missing uploads.
-            raise
-
-    files = []
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(list_path, path) for path in paths]
-        for future in as_completed(futures):
-            files.extend(future.result())
-    return sorted(set(files))
+    Workers 1-20 and staging/fresh from older releases are all included.
+    One listing avoids repeated 404 responses for missing worker directories.
+    """
+    try:
+        return sorted(set(
+            entry.path
+            for entry in api.list_repo_tree(
+                repo_id=REPO_ID,
+                path_in_repo="staging",
+                recursive=True,
+                repo_type="dataset",
+            )
+            if getattr(entry, "path", "").endswith(".jsonl.gz")
+        ))
+    except EntryNotFoundError:
+        # Only a genuinely absent staging subtree is allowed to be empty.
+        # Authentication and network failures must abort compaction.
+        return []
 
 
 def validate_buffer(path, expected_count):
