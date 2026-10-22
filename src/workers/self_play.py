@@ -101,6 +101,8 @@ def choose_opponent(champion, archives, rng, archive_probability=None,
         )
     bootstrap_probability = min(max(float(bootstrap_probability), 0.0), 1.0)
     archive_probability = min(max(float(archive_probability), 0.0), 1.0)
+    if rng is None:
+        rng = np.random.default_rng()
     lottery = float(rng.random())
     if lottery < bootstrap_probability:
         return material_evaluate, "bootstrap-material"
