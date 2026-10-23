@@ -1,29 +1,29 @@
-name: Distributed belief-state self-play
+name: Continuous self-play and recovery
 
-# Continuous mode is dispatched again when its previous matrix finishes.
-# An independent hourly watchdog recovers from lost triggers or failed matrices.
-# Manual runs remain 15 workers, while continuous runs use four bounded workers.
+# One workflow owns the continuous CPU self-play loop, hourly recovery,
+# and monthly schedule keepalive.
 on:
   workflow_dispatch:
-    inputs:
-      continuous:
-        description: "Run the nonstop 4-worker CPU loop (the watchdog uses true)"
-        type: boolean
-        default: false
-        required: false
+  schedule:
+    - cron: "23 * * * *"
+    - cron: "43 3 1 * *"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/self_play.yml"
 
 permissions:
-  contents: read
+  contents: write
   actions: write
 
+# The watchdog must run while a long self-play round is still active.
 concurrency:
-  # Prevent two self-play matrices from overlapping. Training uses a
-  # cutoff-bounded staging snapshot and may safely run at the same time.
-  group: self-play
+  group: self-play-${{ github.event_name == 'workflow_dispatch' && 'round' || 'watchdog' }}
   cancel-in-progress: false
 
 jobs:
   self-play-worker:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # GitHub-hosted jobs have a six-hour maximum. Cap the entire job at
     # 5h55m and reserve >=15 minutes for checkout, Python/PyTorch installation,
@@ -32,8 +32,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Continuous mode: 4 CPU workers; explicit manual heavy run: 15.
-        worker_id: ${{ fromJSON(inputs.continuous && '[1,2,3,4]' || '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
+        # Fixed four-worker nonstop self-play.
+        worker_id: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           SEARCH_NODE_BUDGET_MID: "1200"
           SEARCH_NODE_BUDGET_LATE: "2500"
           TORCH_NUM_THREADS: "1"
-          # Both modes generate for 5h40m. GitHub jobs are limited to six
+          # Generate for 5h40m. GitHub jobs are limited to six
           # hours including setup and uploads; don't waste CPU restarting hourly.
           GENERATION_WINDOW_SECONDS: "20400"
           BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
@@ -74,7 +74,7 @@ jobs:
           DATE_STR=$(date +%Y%m%d)
           
           START_TIME=$(date +%s)
-          # 5h40m of generation in every mode. Persist completed games per
+          # 5h40m of generation per round. Persist completed games per
           # batch; allow time for final HF uploads and worker teardown.
           GENERATION_BUDGET="${GENERATION_WINDOW_SECONDS}"
           UPLOADED_BATCHES=0
@@ -130,19 +130,72 @@ jobs:
           retention-days: 7
 
   continue-next-cycle:
-    # Never dispatch a new expensive 15-worker matrix. Only a healthy
-    # continuous 4-worker round self-dispatches its next bounded round.
-    # On a failure the hourly watchdog performs a delayed recovery instead
-    # of infinitely hot-looping broken workers.
     needs: self-play-worker
-    if: ${{ always() && inputs.continuous && needs.self-play-worker.result == 'success' }}
+    if: ${{ always() && needs.self-play-worker.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Start the next self-play round immediately
+      - name: Continue self-play immediately and train at most once per six hours
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master -f continuous=true
-          echo "[Autonomy] Next 4-worker CPU self-play round dispatched."
+          # Start the next self-play round before any optional training work.
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Autonomy] Next four-worker self-play round dispatched."
+
+          LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // ""')
+          if [ -n "$LAST_TRAIN" ]; then
+            AGE=$(( $(date -u +%s) - $(date -u -d "$LAST_TRAIN" +%s) ))
+            if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 21600 ]; then
+              echo "[Autonomy] Training dispatched ${AGE}s ago; no duplicate."
+              exit 0
+            fi
+          fi
+          gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Autonomy] NNUE training dispatched."
+
+  recovery-watchdog:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Restart self-play only when no round is active
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Exclude scheduled and push-triggered watchdog runs from this count.
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "[Watchdog] ${ACTIVE} active self-play run(s); no duplicate."
+            exit 0
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Watchdog] Restarted four-worker continuous self-play."
+
+      - name: Checkout for monthly keepalive
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+
+      - name: Keep scheduled Actions active with an empty commit
+        if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git checkout -B master origin/master
+            git commit --allow-empty -m "chore: monthly Actions schedule keepalive"
+            if git push origin master; then
+              echo "[Keepalive] Updated repository activity without changing files."
+              exit 0
+            fi
+          done
+          echo "::error::Unable to push monthly keepalive after three attempts."
+          exit 1
