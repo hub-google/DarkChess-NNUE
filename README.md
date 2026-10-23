@@ -14,21 +14,21 @@ CPU-only 台灣暗棋研究專案：**NNUE Value + Star1 chance search + self-pl
 
 ## CPU Actions
 
+2026-10-23 清理：21 個有效 workflow 收斂為 9 個，刪除 12 個重複／一次性 workflow 與 `train.yml.bak`。完整逐項用途、刪除原因及手動研究指令見 [Workflow 盤點](docs/workflow-audit.md)。下方早期驗收紀錄中的已刪除 workflow 名稱僅供歷史追溯。
+
 | Workflow | 觸發 | 作用 |
 | --- | --- | --- |
-| `ci.yml` | push / manual | Python correctness tests |
-| `pipeline_smoke.yml` | 指定變更 push / manual | 真實 1 局 → cache → Value/Policy 訓練 → Policy 引導 1 局 → SPRT |
-| `self_play_trial.yml` | 指定變更 push / manual | 實際兩局完整對弈 + 終局驗證 + Artifact，無 HF 寫入 |
-| `benchmark.yml` | 搜尋相關 push / manual | 搜尋與完整棋局 CPU throughput |
-| `self_play.yml` | 接力 workflow_dispatch | 自動 4 CPU Worker × 5 小時 40 分鐘；完成立即派送下一輪；手動 15 Worker |
-| `train_after_self_play.yml` | 每輪 Self-play 成功完成 | 距上次正式 train 超過六小時才自動派送訓練 |
-| `self_play_watchdog.yml` | 每小時 + 第一次 push / manual | 若無執行中 Self-play，恢復連續 4 Worker 流程（不負責一小時就重啟） |
-| `monthly_activity.yml` | 每月 1 日排程 / manual | 空 Commit 維護 Actions 排程活動 |
-| `hf_production_trial.yml` | push 一次／manual | 單 CPU Worker 產一局、驗證、HF 真正上傳並回讀，**不晉升模型** |
-| `arena.yml` | 指定變更 push／manual | Champion 與公開資訊 material baseline 成對對弈並輸出統計 |
-| `train.yml` | 每日 03:41 UTC / manual | HF 合併 → 未滿千局正常略過 → Value/Policy 訓練 → SPRT → 晉升 |
+| `ci.yml` | push / PR / manual | Python 測試；PR／manual 同時測試與建置前端，push 前端由 Pages 驗證 |
+| `pipeline_smoke.yml` | 訓練相關變更 / manual | 真實對弈及終局驗證 → cache → Value/Policy 訓練 → SPRT → 匯出，不晉升 |
+| `self_play.yml` | 手動／完成即接力 | 連續 4 Worker，每輪生成 5h40m；手動一次性 15 Worker |
+| `train_after_self_play.yml` | 對弈成功完成 / manual | 六小時節流後派送正式訓練 |
+| `self_play_watchdog.yml` | 每小時 / manual | 沒有活躍對弈時才恢復，不中斷正在跑的工作 |
+| `train.yml` | 每日 11:41 台灣時間 / manual／事件派送 | HF 合併 → 千局門檻 → 訓練 → SPRT → 合格才晉升及部署 |
+| `publish_training_status.yml` | 對弈／訓練完成 / manual／指定變更 | 更新公開統計，數字改變才部署 |
+| `deploy_pages.yml` | 前端／模型變更 / manual／派送 | 前端測試、建置與 Pages 部署 |
+| `monthly_activity.yml` | 每月 1 日 11:43 台灣時間 / manual | 空 Commit 維護排程活動 |
 
-已啟用工作完成即接力的 GitHub Actions 自我對弈與每小時故障恢復，訓練另以事件觸發（六小時限一次）和每日 cron 備援。私人 HF 資料仍需 `HF_TOKEN` Secret；GitHub 排隊、平台限額或停用仍可能造成中斷。
+私人 HF 資料仍使用既有 `HF_TOKEN`；工作接力、故障恢復、正式 SPRT 晉升與網頁更新均保留。
 
 ## 快速本地測試
 
@@ -48,7 +48,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 
 2026-10-22 已在原 HF 帳號、原 ID `hub-google/DarkChess-NNUE-Data` 重建缺失的**私人** dataset，並用 GitHub Action 真實對弈完成「上傳 → 回讀 → 終局重播」驗證；**已不存在的舊 replay 尚未復原**。見 [HF bootstrap 驗收](https://github.com/hub-google/DarkChess-NNUE/actions/runs/39755073316)。
 
-另保留 `run_full_production_once.yml`：先跑 CPU correctness tests，再以 `workflow_dispatch` 啟動現有 15-worker `self_play.yml` 的**一次**加速資料生成。常態任務採 4 Worker × 55 分鐘完成即接力，正式 training 以六小時間隔事件觸發、每天一次備援 cron；至少要有 **1000 局有效棋譜**，不足就正常略過並繼續累積。通過配對 SPRT 的 Challenger 才能取代 Champion。
+一次性啟動包裝已刪除，需要時直接手動執行 `self_play.yml`（`continuous=false`）啟動 15 Worker。常態任務採 4 Worker × 5 小時 40 分鐘完成即接力，正式 training 以六小時間隔事件觸發、每天一次備援 cron；至少要有 **1000 局有效棋譜**，不足就正常略過並繼續累積。通過配對 SPRT 的 Challenger 才能取代 Champion。
 
 注意：完整生產流程的 Action 可能需要數小時；Action 被接受／啟動不等於已訓練成功，更不代表世界排名已獲證明。
 ## 網頁端機率搜尋（2026-10-22）
@@ -57,7 +57,7 @@ python -u src/training/validate_replay.py --directory output_data --min-games 1
 
 ## 外部開源引擎對戰
 
-`external_arena.yml` 會抓取固定 commit `9f7fbe849f5d4a2b3358b1b18a31a2cf1bfdcc5c` 的 [MistyBanqi](https://github.com/brianhliou/misty-banqi) MIT 授權 Rust 引擎，編譯為原生 UCI binary，再以兩局同樣隱藏底牌、交換玩家順序的配對比賽測試 NNUE Champion。這是獨立引擎，跟只對戰自身或 material baseline 不同。公共 FEN 不傳任何真實暗牌，並以 `searchmoves` 強制當局合法根動作。MistyBanqi 與本專案長追、和棋實作仍可能不完全相同，若 UCI 回傳非法動作，測試將**失敗而不是悄悄變更棋規**。兩對／四局為端到端 smoke，不是 Elo 信賴區間，也不是世界第一證據。
+已移除的 `external_arena.yml` 原本會抓取固定 commit `9f7fbe849f5d4a2b3358b1b18a31a2cf1bfdcc5c` 的 [MistyBanqi](https://github.com/brianhliou/misty-banqi) MIT 授權 Rust 引擎，編譯為原生 UCI binary，再以兩局同樣隱藏底牌、交換玩家順序的配對比賽測試 NNUE Champion。這是獨立引擎，跟只對戰自身或 material baseline 不同。公共 FEN 不傳任何真實暗牌，並以 `searchmoves` 強制當局合法根動作。MistyBanqi 與本專案長追、和棋實作仍可能不完全相同，若 UCI 回傳非法動作，測試將**失敗而不是悄悄變更棋規**。兩對／四局為端到端 smoke，不是 Elo 信賴區間，也不是世界第一證據。
 
 ## 驗證報告與模型部署
 

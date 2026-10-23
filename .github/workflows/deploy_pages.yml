@@ -22,7 +22,6 @@ concurrency:
 
 jobs:
   build:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     name: 🏗️ 前端單元測試與 Vite 靜態檔構建 (Build & Test)
     runs-on: ubuntu-latest
     steps:

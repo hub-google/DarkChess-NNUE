@@ -1,4 +1,4 @@
-name: Python CI
+name: Python and browser CI
 
 on:
   push:
@@ -24,3 +24,22 @@ jobs:
           pip install -r requirements.txt
       - name: Run Python tests
         run: python -m unittest discover -s test -p "test_*.py" -v
+
+  test-browser:
+    # Pages tests pushes before deployment; CI also protects pull requests.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npm run test -- --run
+      - working-directory: frontend
+        run: npm run build

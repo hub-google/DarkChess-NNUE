@@ -41,7 +41,9 @@ jobs:
           SEARCH_NODE_BUDGET_LATE: "1000"
           ARCHIVE_OPPONENT_PROBABILITY: "0"
           TORCH_NUM_THREADS: "1"
-        run: python -u src/workers/self_play.py
+        run: |
+          python -u src/workers/self_play.py
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
 
       - name: Build binary cache and small reanalysis sample
         env:
