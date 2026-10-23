@@ -158,6 +158,8 @@ jobs:
           path: |
             training_cache/manifest.json
             sprt_results.json
+            models/challenger.nnue
+            models/challenger.policy
           if-no-files-found: warn
           retention-days: 30
 
@@ -192,6 +194,12 @@ jobs:
           if [ -f models/champion.policy ]; then git add models/champion.policy; fi
           if ! git diff --staged --quiet; then
             git commit -m "chore: promote validated NNUE champion"
+            # Training may have modified other tracked files (e.g. old
+            # challenger checkpoints) that are intentionally not committed.
+            # Keep the validated champion commit, discard only scratch
+            # working-tree mutations so git rebase can run successfully.
+            git status --short
+            git reset --hard HEAD
             # The public training-status workflow may update master while a
             # several-hour CPU training is running. Rebase that unrelated
             # commit rather than losing a legitimate SPRT promotion.
