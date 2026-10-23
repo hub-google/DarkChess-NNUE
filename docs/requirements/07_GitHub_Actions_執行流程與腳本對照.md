@@ -264,3 +264,10 @@ export frontend model
 - Worker 若在最後不完整棋局遇到 CPU timeout，但早前成功 upload 一批以上完整 replay，應視為正常收尾；完全零有效棋譜、真正的程式崩潰、HF 上傳失敗仍必須報錯，交給 watchdog 下個檢查週期恢復。
 - `train_after_self_play.yml` **不排除 schedule**：每次成功完成自我對弈都檢查上次正式訓練的派送時間，不足六小時略過，超過六小時會派送 `train.yml`；每日 03:41 UTC 定時訓練仍為備援。`train.yml` 需驗證 1,000 有效對局、產生 NNUE Challenger、通過 SPRT H1 才晉升。這是連續自我對弈 + 受控訓練，不是宣稱每一輪都必然變強。
 - `test_autonomous_loop.py` 契約測試與 `autonomous_loop_acceptance.yml` 驗證工作檔內的迴圈、watchdog、訓練與私人 HF 權限。平台配額、GitHub 延誤或服務停用不可能用 YAML 保證完全零中斷，watchdog 提供自動復原。
+
+## 十三、2026-10-23 連續模式執行時長修正（取代第十二節所列 55 分鐘）
+
+- `self_play.yml` 正式連續 CPU 工作的 `GENERATION_WINDOW_SECONDS=20400`，即 **5h40m**，不再是 55 分鐘；手動十五 Worker 同樣為 5h40m，防止 6h GitHub Runner 上限在 setup 與資料上傳期間提前終止。
+- `timeout-minutes: 355` 是單個 job 的上限 **5h55m**；至少預留十五分鐘給必要準備、網路上傳、收尾。每一小批棋譜仍即時上傳私人 HF staging，長 job 遇到最後不完整棋局可安全結束。
+- `continue-next-cycle` 只在上次全部 Worker 成功後立即派送；`self_play_watchdog.yml` 每小時巡檢只負責排除 idle / failure，不會在執行中的 Worker 還沒滿 6h 時殺掉重跑。
+- 修改已提交的情況下，**GitHub 已經啟動的工作會使用啟動那刻的 Workflow 版本**，自然結束後下一輪才讀取新版 5h40m 設定。

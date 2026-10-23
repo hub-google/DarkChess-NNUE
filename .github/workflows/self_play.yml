@@ -25,8 +25,9 @@ concurrency:
 jobs:
   self-play-worker:
     runs-on: ubuntu-latest
-    # Leave five minutes for setup/cleanup after the 5h50 generation window,
-    # instead of being killed at GitHub's six-hour hosted-runner limit.
+    # GitHub-hosted jobs have a six-hour maximum. Cap the entire job at
+    # 5h55m and reserve >=15 minutes for checkout, Python/PyTorch installation,
+    # upload retries and artifact cleanup after the 5h40m generation window.
     timeout-minutes: 355
     strategy:
       fail-fast: false
@@ -63,8 +64,9 @@ jobs:
           SEARCH_NODE_BUDGET_MID: "1200"
           SEARCH_NODE_BUDGET_LATE: "2500"
           TORCH_NUM_THREADS: "1"
-          # Continuous mode: 55m bounded CPU; manual mode: 5h50.
-          GENERATION_WINDOW_SECONDS: ${{ inputs.continuous && '3300' || '21000' }}
+          # Both modes generate for 5h40m. GitHub jobs are limited to six
+          # hours including setup and uploads; don't waste CPU restarting hourly.
+          GENERATION_WINDOW_SECONDS: "20400"
           BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
         run: |
           mkdir -p output_data
@@ -72,8 +74,8 @@ jobs:
           DATE_STR=$(date +%Y%m%d)
           
           START_TIME=$(date +%s)
-          # Continuous: 55 minutes. Heavy manual: 5h50. Persist completed
-          # games before deadlines and upload only actual completed games.
+          # 5h40m of generation in every mode. Persist completed games per
+          # batch; allow time for final HF uploads and worker teardown.
           GENERATION_BUDGET="${GENERATION_WINDOW_SECONDS}"
           UPLOADED_BATCHES=0
           while true; do

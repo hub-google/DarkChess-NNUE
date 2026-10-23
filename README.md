@@ -20,9 +20,9 @@ CPU-only 台灣暗棋研究專案：**NNUE Value + Star1 chance search + self-pl
 | `pipeline_smoke.yml` | 指定變更 push / manual | 真實 1 局 → cache → Value/Policy 訓練 → Policy 引導 1 局 → SPRT |
 | `self_play_trial.yml` | 指定變更 push / manual | 實際兩局完整對弈 + 終局驗證 + Artifact，無 HF 寫入 |
 | `benchmark.yml` | 搜尋相關 push / manual | 搜尋與完整棋局 CPU throughput |
-| `self_play.yml` | 接力 workflow_dispatch | 自動 4 CPU Worker × 55 分鐘；完成立刻派送下一輪；手動 15 Worker |
+| `self_play.yml` | 接力 workflow_dispatch | 自動 4 CPU Worker × 5 小時 40 分鐘；完成立即派送下一輪；手動 15 Worker |
 | `train_after_self_play.yml` | 每輪 Self-play 成功完成 | 距上次正式 train 超過六小時才自動派送訓練 |
-| `self_play_watchdog.yml` | 每小時 + 第一次 push / manual | 若無執行中 Self-play，恢復連續 4 Worker 流程 |
+| `self_play_watchdog.yml` | 每小時 + 第一次 push / manual | 若無執行中 Self-play，恢復連續 4 Worker 流程（不負責一小時就重啟） |
 | `monthly_activity.yml` | 每月 1 日排程 / manual | 空 Commit 維護 Actions 排程活動 |
 | `hf_production_trial.yml` | push 一次／manual | 單 CPU Worker 產一局、驗證、HF 真正上傳並回讀，**不晉升模型** |
 | `arena.yml` | 指定變更 push／manual | Champion 與公開資訊 material baseline 成對對弈並輸出統計 |
@@ -109,6 +109,12 @@ GitHub scheduled self_play.yml (4 CPU workers × 55 minutes, every 6h)
 
 舊版為每六小時啟動一次（只跑約 55 分鐘），且 `train_after_self_play.yml` 錯誤排除了 `schedule`，所以幾千局 staging 棋譜沒有自動進入正式訓練。另舊 15 Worker 的失敗是最後不完整的一局被 timeout 後，先前已上傳成功的 worker 再次嘗試零檔案 upload 而誤判失敗（13/15 成功）。
 
-現改為 `self_play_watchdog.yml` 啟動 `self_play.yml -f continuous=true`（4 Worker、55 分鐘），**本輪所有 Worker 成功結束便由 `continue-next-cycle` job 立即 `workflow_dispatch` 下一輪**，不依賴六小時 cron；若本輪失敗或未成功派送，watchdog **每小時 23 分 UTC** 檢查有無正在跑／排隊的工作，沒有才恢復。不能宣稱 GitHub runner 100% 零空檔：安裝環境、API 派送與排隊仍有時間，配額或平台停用時需排除平台限制。手動 15 Worker 仍是一次性工作，不會意外放大為 15 Worker 無窮遞迴。
+現改為 `self_play_watchdog.yml` 啟動 `self_play.yml -f continuous=true`（4 Worker、每輪 5 小時 40 分鐘），**本輪所有 Worker 成功結束便由 `continue-next-cycle` job 立即 `workflow_dispatch` 下一輪**，不依賴六小時 cron；若本輪失敗或未成功派送，watchdog **每小時 23 分 UTC** 檢查有無正在跑／排隊的工作，沒有才恢復。不能宣稱 GitHub runner 100% 零空檔：安裝環境、API 派送與排隊仍有時間，配額或平台停用時需排除平台限制。手動 15 Worker 仍是一次性工作，不會意外放大為 15 Worker 無窮遞迴。
 
 `train_after_self_play.yml` 改為**每次成功完成自我對弈都檢查**，若過去 6 小時無正式 `train.yml` 啟動，就派送一次，保留每日獨立訓練 cron 作為備援；不足 1000 局正常累積，足夠才重訓、SPRT 比較並且只有 H1 才晉升。最近一次公開資料約有 2,902 局（可能有重複待合併），因此需要實際觸發正式訓練確認。已完成的末尾批次與中途 timeout 不會造成虛假的失敗或虛假的勝局。
+
+### 2026-10-23 修正：每輪使用 5 小時 40 分鐘而不是 55 分鐘
+
+GitHub-hosted runner 的 job 單次最長約 6 小時。先前連續模式每 55 分鐘重新安裝一次 PyTorch、重新載入模型、重新排隊並開始下一輪，完全沒有必要。已統一自動四 Worker 及手動十五 Worker 的棋譜生成時間為 **20,400 秒（5 小時 40 分）**，`timeout-minutes: 355`（整個 job 5 小時 55 分）留出安裝、Hugging Face 上傳重試、收尾與保留 artifact 的時間。Worker 每完成 10 局仍會分批上傳以避免資料遺失；長時間工作的最後一局被中斷不會刪除已上傳的合法棋譜。
+
+**接力機制保持不變**：本輪成功結束派送下一輪；若異常失敗或派送漏掉，Watchdog 每小時檢查是否有活躍 workflow，只有沒有時才派送。因此 Actions 畫面正常情況約每 5 小時 40 分多才會有一個新四 Worker 工作。這不是每小時限制；Watchdog 每小時查一次不會中斷活躍作業。已在運行的舊版 Workflow 使用起跑時的舊版設定，**要等該輪自然完賽後新的 5h40 版本才會生效**。
