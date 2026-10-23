@@ -1,6 +1,6 @@
 # 07. GitHub Actions 執行流程與腳本對照
 
-本文件以目前 `master` 內實際存在的 `.github/workflows/*.yml` 為準。**Self-play、training、Pages deploy、training-status publish 的自動排程／事件觸發目前都已依使用者要求註解，只保留手動啟動。** 不應從舊文件誤以為它們仍在背景自動跑。
+本文件記錄早期一次性模式與新版連續模式。**2026-10-23 現行設定：Self-play 一輪成功便派送下一輪，watchdog 每小時恢復意外停止的作業；訓練每六小時事件觸發（僅有新一輪成功時）與每日 cron 備援；正式模型依 SPRT 門檻安全晉升。** 下方歷史章節如寫了「manual only」一律以第十二節的現行控制器為準。
 
 ## 一、 目前有效的 Workflow
 
@@ -12,8 +12,10 @@
 | `hf_production_trial.yml` | 單次 push / manual | 一局真實 CPU 對弈 → 終局驗證 → HF staging 上傳 → 從 HF 回讀再驗證；不晉升模型 |
 | `arena.yml` | 指定程式 push / manual | Champion vs material baseline 配對競技場，輸出 JSON 與 artifact |
 | `benchmark.yml` | 指定搜尋/模型檔案 push / manual | CPU search benchmark，輸出 artifact |
-| `self_play.yml` | 每六小時 schedule／manual | 排程 4 個 CPU Worker × 55 分鐘；手動 15 個 CPU Worker，合法 replay 上傳 HF staging |
-| `train.yml` | 每日 03:41 UTC schedule／manual | consolidate → replay 門檻 → cache/reanalysis → train → SPRT → promotion |
+| `self_play.yml` | 4 Worker 完成即接力／manual | 4 個 CPU Worker × 55 分鐘，完賽即 workflow_dispatch 下一輪；手動 15 Worker 可選 |
+| `self_play_watchdog.yml` | 每小時／manual | 本輪失敗或接力丟失時，檢查無 active 工作才重新派送 4 Worker |
+| `train_after_self_play.yml` | 每輪 Self-play 成功 | 每六小時最多派送一次正式訓練 |
+| `train.yml` | 完賽事件派送／每日備援／manual | consolidate → replay 門檻 → cache/reanalysis → train → SPRT → promotion |
 | `deploy_pages.yml` | 前端 push／manual／正式晉升後派送 | 前端測試、build、部署 GitHub Pages |
 | `publish_training_status.yml` | workflow_run／manual／設定更新 push | 從 HF 讀取安全統計並更新前端 training-status |
 | `reset_replay_data.yml` | **manual + confirmation** | 新規則版本時清除舊 replay/staging |
@@ -26,17 +28,17 @@
 
 ### 現況
 
-- Trigger：`workflow_dispatch`
-- Matrix：`worker_id: 1..15`
+- Trigger：`workflow_dispatch`（continuous=true 由 watchdog／前輪接力派送）。
+- Matrix：continuous=true 為 `worker_id: 1..4`；單次手動模式為 1..15。
 - Runner：`ubuntu-latest`
 - Python：3.10
 - PyTorch：CPU-only wheel
 - Job timeout：355 分鐘
-- 單次 generation budget：21,000 秒（5 小時 50 分）
+- 單次 generation budget：連續模式 3,300 秒（55 分鐘），手動模式 21,000 秒（5 小時 50 分）
 - 單步預設 deadline：3 秒，預設搜尋節點限制 early=500、mid=1200、late=2500；在完整棋局 Benchmark 證明可行前不得恢復高額度。
 - 若失去深度一的搜尋結果，產生 `qd=0` 合法走法；它只能當結果學習資料、不可當 Policy 教師。
 
-自動 `0 */6 * * *` cron 仍留在檔案註解中，**目前不會執行**。
+Self-play 不再靠六小時 cron：本輪成功由 `continue-next-cycle` 自行派送，失敗／丟失時 watchdog 每小時恢復。
 
 ### 執行流程
 
@@ -55,7 +57,7 @@ Hugging Face staging/worker_${WORKER_ID}/
 - 搜尋不得偷讀 `hid` / `hidden_pieces`。
 - 完成的局先持久化，runner 接近截止時間時仍可把已完成資料上傳；**零完成／零有效棋譜則上傳步驟必須報錯，整個 Worker 應為失敗**，不得假成功。
 - 有經晉升的 `models/champion.policy` 時，可在探索步將 15% 已遮罩合法走法的 Policy prior 與 Star1 搜尋策略混合；沒有 checkpoint 時保留原本搜尋策略。
-- 目前正式 Worker 數固定 15；融合與 reset 腳本仍掃描 1~20，只為相容歷史 staging。
+- 連續 Worker 數為 4，手動完整測試仍為 15；合併及 reset 腳本相容歷史上傳目錄。
 
 ---
 
@@ -63,7 +65,7 @@ Hugging Face staging/worker_${WORKER_ID}/
 
 ### 現況
 
-Trigger：`workflow_dispatch`。原本每日 UTC 19:00（台灣次日 03:00）的 cron 已註解，**目前不會每天自動訓練**。
+Trigger：`workflow_dispatch` 與每日 03:41 UTC 排程。每次成功 Self-play 的 `train_after_self_play.yml` 會檢查過去六小時是否啟動正式訓練，若沒有則呼叫 `train.yml`。
 
 ### 真實步驟
 
@@ -78,7 +80,7 @@ Trigger：`workflow_dispatch`。原本每日 UTC 19:00（台灣次日 03:00）�
    - 使用目前 champion 做小量 reanalysis
    - 寫入 `reanalysis_overrides.npz`
    - 寫入 `manifest.json`
-7. 檢查 binary cache 至少有 1,000 局有效對弈（防止空白／過小 buffer 污染 Champion）；不足直接失敗，**不**晉升模型。
+7. 先由 `replay_gate.py` 檢查 replay 至少有 1,000 局（不足正常略過訓練且下一輪繼續累積）；再嚴格驗證 binary cache 的完整合法棋譜門檻，不足或資料損毀才失敗且不晉升。
 8. 執行 `src/training/train.py`，從 champion 續訓產生 `models/challenger.nnue`。
 8. 執行 `src/training/policy_train.py`，使用搜尋教師 softmax 訓練獨立 CPU Policy Head；沒有新格式教師資料時略過。
 9. 執行 `src/training/sprt_validation.py`：
@@ -167,7 +169,7 @@ export champion.bin / champion.json
 
 ### `deploy_pages.yml`
 
-目前 **每日 03:41 UTC 排程／manual**；訓練資料不足門檻時成功略過，保留既有 Champion。
+目前在前端程式或部署 workflow 修改推送時，或有新 Champion 真正通過 SPRT 時自動派送，亦可手動啟動。
 
 執行：
 
@@ -178,7 +180,7 @@ export champion.bin / champion.json
 5. upload-pages-artifact
 6. deploy-pages
 
-舊的 push / workflow_run 自動觸發仍保留在註解內，但現在不會因 champion 更新自動部署。
+前端相關 push 可直接觸發部署，正式訓練晉升會另外透過 `gh workflow run deploy_pages.yml` 明確派送。
 
 ### `publish_training_status.yml`
 
@@ -234,7 +236,7 @@ models/champion.nnue
 export frontend model
 ```
 
-目前不應把這張圖理解成「背景會自動一直跑」；生產 self-play / train / deploy / status publish 都需要手動啟動，只有 CI、pipeline smoke 與 benchmark 依各自 push 條件自動執行。
+上圖保留的是過去的單輪流程；現行的「完賽接力＋每小時 Watchdog 自動恢復」及訓練事件觸發見第十二節。
 
 ## 十、一次性的正式訓練鏈接（2026-10-22）
 
