@@ -254,3 +254,11 @@ export frontend model
 - `train.yml`：登入 HF Private Dataset 下載 replay；`replay_gate.py` 低於 1000 局時以 `ready=false` **成功略過**昂貴訓練，留待下一次排程；到達 1000 局才進行完整資料合法性驗證、CPU Value/Policy 訓練與 SPRT；H1 才會晉升。跨多個排程累積，不會因訓練門檻未達就停止。
 - `monthly_activity.yml`：每月建立空 Git commit（內容不變）維持公共 Repo 活動，降低 GitHub Actions 的 60 天無活動停用排程風險。
 - `autonomous_loop_acceptance.yml`：測試上述自動化契約以及能否用原本 HF_TOKEN 存取私有 Dataset。**自動運作不保證必然棋力提升**，仍以有統計意義的 H1 與獨立對手評估。
+
+## 十二、2026-10-23 持續執行控制器（現行正式設定，覆蓋上述舊版描述）
+
+- `self_play_watchdog.yml` 每小時 UTC 23 分執行；沒有活躍或排隊的 self_play workflow 就派送新的 `continuous=true` 工作，首次推送此 workflow 自動啟動第一次。若有任何活躍自我對弈，直接略過避免重複。
+- `self_play.yml` 以 workflow_dispatch input `continuous=true` 啟用 4 Worker／55 分鐘，成功結束時 `continue-next-cycle` job dispatch 相同的下一輪；手動不帶參數仍保留 15 Worker／5h50。不得把 `workflow_run` 作為唯一迴圈控制，以免失敗／已跳過時永久停止。
+- Worker 若在最後不完整棋局遇到 CPU timeout，但早前成功 upload 一批以上完整 replay，應視為正常收尾；完全零有效棋譜、真正的程式崩潰、HF 上傳失敗仍必須報錯，交給 watchdog 下個檢查週期恢復。
+- `train_after_self_play.yml` **不排除 schedule**：每次成功完成自我對弈都檢查上次正式訓練的派送時間，不足六小時略過，超過六小時會派送 `train.yml`；每日 03:41 UTC 定時訓練仍為備援。`train.yml` 需驗證 1,000 有效對局、產生 NNUE Challenger、通過 SPRT H1 才晉升。這是連續自我對弈 + 受控訓練，不是宣稱每一輪都必然變強。
+- `test_autonomous_loop.py` 契約測試與 `autonomous_loop_acceptance.yml` 驗證工作檔內的迴圈、watchdog、訓練與私人 HF 權限。平台配額、GitHub 延誤或服務停用不可能用 YAML 保證完全零中斷，watchdog 提供自動復原。

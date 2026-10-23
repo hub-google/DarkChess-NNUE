@@ -1,0 +1,42 @@
+name: Continuous self-play recovery watchdog
+
+# The self-play workflow starts its own next round on success. This watchdog
+# recovers from one failed matrix, missed callback or unavailable runner without
+# waiting six hours. Also bootstraps the first continuous round on this file's
+# initial push. Workflows can still stop due to GitHub quotas or disabled Actions.
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/self_play_watchdog.yml"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: self-play-watchdog
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start a continuous CPU round if GitHub has no live self-play
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Includes queued, waiting, requested and in_progress; never
+          # launch a duplicate matrix while one is running or being started.
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100"             --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "[Watchdog] ${ACTIVE} active self-play workflow(s); no duplicate dispatch."
+            exit 0
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master -f continuous=true
+          echo "[Watchdog] No live round; dispatched autonomous 4-worker round."

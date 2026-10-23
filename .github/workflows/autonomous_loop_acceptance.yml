@@ -11,6 +11,7 @@ on:
       - '.github/workflows/self_play.yml'
       - '.github/workflows/train.yml'
       - '.github/workflows/train_after_self_play.yml'
+      - '.github/workflows/self_play_watchdog.yml'
 
 permissions:
   contents: read

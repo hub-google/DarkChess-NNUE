@@ -10,12 +10,25 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
     def read(self, workflow):
         return (ROOT / workflow).read_text(encoding="utf-8")
 
-    def test_scheduled_generation_is_bounded(self):
+    def test_continuous_generation_is_bounded_and_self_restarts(self):
         code = self.read("self_play.yml")
-        self.assertIn('cron: "17 */6 * * *"', code)
+        self.assertIn("inputs.continuous", code)
         self.assertIn("GENERATION_WINDOW_SECONDS", code)
         self.assertIn("'3300'", code)
-        self.assertIn("fromJSON(github.event_name == 'schedule'", code)
+        self.assertIn("continue-next-cycle:", code)
+        self.assertIn("needs.self-play-worker.result == 'success'", code)
+        self.assertIn("gh workflow run self_play.yml", code)
+        self.assertIn("-f continuous=true", code)
+        self.assertIn("UPLOADED_BATCHES", code)
+        self.assertIn('compgen -G "output_data/*.jsonl.gz"', code)
+
+    def test_hourly_watchdog_recovers_idle_or_failed_loop(self):
+        code = self.read("self_play_watchdog.yml")
+        self.assertIn('cron: "23 * * * *"', code)
+        self.assertIn("workflow_dispatch:", code)
+        self.assertIn("gh workflow run self_play.yml", code)
+        self.assertIn("actions/workflows/self_play.yml/runs", code)
+        self.assertIn("status != \\"completed\\"", code)
 
     def test_completion_bridge_starts_real_training(self):
         code = self.read("train_after_self_play.yml")
@@ -23,6 +36,8 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn('"Distributed belief-state self-play"', code)
         self.assertIn("github.event.workflow_run.conclusion == 'success'", code)
         self.assertIn("gh workflow run train.yml", code)
+        self.assertIn("21600", code)
+        self.assertNotIn("workflow_run.event != 'schedule'", code)
 
     def test_private_dataset_gate_before_training(self):
         code = self.read("train.yml")

@@ -102,3 +102,11 @@ GitHub scheduled self_play.yml (4 CPU workers × 55 minutes, every 6h)
 ### 自動 CPU 配額修正
 
 由於訓練比產生一小批棋譜更昂貴，最終排程改為**每天四次 4 Worker／55 分鐘自我對弈 + 每天一次 03:41 UTC 訓練**，避免每次爬取都重新跑 3 個 epoch；手動 15 Worker 完成後仍會額外觸發一次訓練。Train Workflow 使用 cutoff 保護同時上傳的 staging；不足 1000 局正常略過。若比賽 512 步尚未終局，完整對局資料不允許偽造和局：Self-play 略過不完整的一局，SPRT 在配對層重抽整組底牌，超出重試額度直接失敗、不晉升。
+
+## 2026-10-23 連續自我對弈修正（不再每六小時乾等）
+
+舊版為每六小時啟動一次（只跑約 55 分鐘），且 `train_after_self_play.yml` 錯誤排除了 `schedule`，所以幾千局 staging 棋譜沒有自動進入正式訓練。另舊 15 Worker 的失敗是最後不完整的一局被 timeout 後，先前已上傳成功的 worker 再次嘗試零檔案 upload 而誤判失敗（13/15 成功）。
+
+現改為 `self_play_watchdog.yml` 啟動 `self_play.yml -f continuous=true`（4 Worker、55 分鐘），**本輪所有 Worker 成功結束便由 `continue-next-cycle` job 立即 `workflow_dispatch` 下一輪**，不依賴六小時 cron；若本輪失敗或未成功派送，watchdog **每小時 23 分 UTC** 檢查有無正在跑／排隊的工作，沒有才恢復。不能宣稱 GitHub runner 100% 零空檔：安裝環境、API 派送與排隊仍有時間，配額或平台停用時需排除平台限制。手動 15 Worker 仍是一次性工作，不會意外放大為 15 Worker 無窮遞迴。
+
+`train_after_self_play.yml` 改為**每次成功完成自我對弈都檢查**，若過去 6 小時無正式 `train.yml` 啟動，就派送一次，保留每日獨立訓練 cron 作為備援；不足 1000 局正常累積，足夠才重訓、SPRT 比較並且只有 H1 才晉升。最近一次公開資料約有 2,902 局（可能有重複待合併），因此需要實際觸發正式訓練確認。已完成的末尾批次與中途 timeout 不會造成虛假的失敗或虛假的勝局。

@@ -1,11 +1,20 @@
 name: Distributed belief-state self-play
 
-# Autonomous bounded cycles; manual mode retains the original 15-worker matrix.
-# Slightly offset from top of hour to reduce GitHub cron congestion.
+# Continuous mode is dispatched again when its previous matrix finishes.
+# An independent hourly watchdog recovers from lost triggers or failed matrices.
+# Manual runs remain 15 workers, while continuous runs use four bounded workers.
 on:
-  schedule:
-    - cron: "17 */6 * * *"
   workflow_dispatch:
+    inputs:
+      continuous:
+        description: "Run the nonstop 4-worker CPU loop (the watchdog uses true)"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+  actions: write
 
 concurrency:
   # Prevent two self-play matrices from overlapping. Training uses a
@@ -22,8 +31,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 4 workers for inexpensive 6-hour scheduled cycles; 15 for manual runs.
-        worker_id: ${{ fromJSON(github.event_name == 'schedule' && '[1,2,3,4]' || '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
+        # Continuous mode: 4 CPU workers; explicit manual heavy run: 15.
+        worker_id: ${{ fromJSON(inputs.continuous && '[1,2,3,4]' || '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,8 +63,8 @@ jobs:
           SEARCH_NODE_BUDGET_MID: "1200"
           SEARCH_NODE_BUDGET_LATE: "2500"
           TORCH_NUM_THREADS: "1"
-          # A scheduled cycle must finish long before the next 6-hour run.
-          GENERATION_WINDOW_SECONDS: ${{ github.event_name == 'schedule' && '3300' || '21000' }}
+          # Continuous mode: 55m bounded CPU; manual mode: 5h50.
+          GENERATION_WINDOW_SECONDS: ${{ inputs.continuous && '3300' || '21000' }}
           BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
         run: |
           mkdir -p output_data
@@ -63,9 +72,10 @@ jobs:
           DATE_STR=$(date +%Y%m%d)
           
           START_TIME=$(date +%s)
-          # Scheduled: 55 minutes. Manual: 5h50. Each batch is bounded;
-          # games saved before timeout are still verified and uploaded.
+          # Continuous: 55 minutes. Heavy manual: 5h50. Persist completed
+          # games before deadlines and upload only actual completed games.
           GENERATION_BUDGET="${GENERATION_WINDOW_SECONDS}"
+          UPLOADED_BATCHES=0
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
@@ -82,7 +92,18 @@ jobs:
               python -u src/workers/self_play.py
             SELF_PLAY_STATUS=$?
             set -e
-            python -u src/workers/upload_batch.py
+            if compgen -G "output_data/*.jsonl.gz" > /dev/null; then
+              python -u src/workers/upload_batch.py
+              UPLOADED_BATCHES=$((UPLOADED_BATCHES + 1))
+            elif [ "$SELF_PLAY_STATUS" -eq 124 ] && [ "$UPLOADED_BATCHES" -gt 0 ]; then
+              # Last in-progress game was killed at the time limit, but all
+              # previous complete batches are already safe in HF. Not a failure.
+              echo "[Self-Play] Clean time limit: earlier batches uploaded; no new completed game."
+              break
+            else
+              echo "::error::No complete replay in this batch (exit=$SELF_PLAY_STATUS)."
+              exit 1
+            fi
 
             if [ "$SELF_PLAY_STATUS" -eq 124 ]; then
               echo "Batch reached the generation deadline; uploaded completed games."
@@ -92,6 +113,10 @@ jobs:
               exit "$SELF_PLAY_STATUS"
             fi
           done
+          if [ "$UPLOADED_BATCHES" -eq 0 ]; then
+            echo "::error::No completed batches were uploaded in this worker's window."
+            exit 1
+          fi
 
       - name: Preserve data if upload failed
         if: failure()
@@ -101,3 +126,21 @@ jobs:
           path: output_data/
           if-no-files-found: ignore
           retention-days: 7
+
+  continue-next-cycle:
+    # Never dispatch a new expensive 15-worker matrix. Only a healthy
+    # continuous 4-worker round self-dispatches its next bounded round.
+    # On a failure the hourly watchdog performs a delayed recovery instead
+    # of infinitely hot-looping broken workers.
+    needs: self-play-worker
+    if: ${{ always() && inputs.continuous && needs.self-play-worker.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start the next self-play round immediately
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master -f continuous=true
+          echo "[Autonomy] Next 4-worker CPU self-play round dispatched."
