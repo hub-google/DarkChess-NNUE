@@ -28,7 +28,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", code)
         self.assertIn("gh workflow run self_play.yml", code)
         self.assertIn("actions/workflows/self_play.yml/runs", code)
-        self.assertIn("status != \\"completed\\"", code)
+        self.assertIn('status != "completed"', code)
 
     def test_completion_bridge_starts_real_training(self):
         code = self.read("train_after_self_play.yml")
