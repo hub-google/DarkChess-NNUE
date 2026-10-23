@@ -4,6 +4,13 @@ name: Continuous self-play and recovery
 # and monthly schedule keepalive.
 on:
   workflow_dispatch:
+    # Accept the input still sent by an already-running pre-migration round.
+    inputs:
+      continuous:
+        description: "Backward-compatible flag; all runs are continuous"
+        type: boolean
+        required: false
+        default: true
   schedule:
     - cron: "23 * * * *"
     - cron: "43 3 1 * *"
