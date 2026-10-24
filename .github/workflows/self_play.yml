@@ -107,36 +107,35 @@ jobs:
           # Do not let them prevent the first 15-worker run from starting.
           ACTIVE_IDS=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed") | .id')
+          FOUND_NEW=0
+          # Inspect ALL active runs before deciding. Previously an early return
+          # on the new run left the old four-worker jobs wasting free runners.
           for active_id in $ACTIVE_IDS; do
-            # Legacy four-worker runs consume four parallel slots and upload
-            # directly from each worker. Retire those runs now that the new
-            # single-writer architecture has started, preserving uploaded data.
-            LEGACY_JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name | startswith("self-play-worker"))] | length')
+            JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100")
+            LEGACY_JOBS=$(jq '[.jobs[] | select(.name | startswith("self-play-worker"))] | length' <<< "$JOBS")
             if [ "$LEGACY_JOBS" -gt 0 ]; then
-              echo "[Watchdog] Cancelling retired four-worker run $active_id."
+              echo "[Watchdog] Cancelling obsolete four-worker run $active_id."
               gh run cancel "$active_id" --repo "$GITHUB_REPOSITORY" || true
               continue
             fi
-            META=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id" \
-              --jq '[.created_at, .head_sha] | join(" ")')
-            STARTED=${META%% *}
-            AGE=$(( $(date -u +%s) - $(date -u -d "$STARTED" +%s) ))
-            WAVE_JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name | contains(" / Wave "))] | length')
+            WAVE_JOBS=$(jq '[.jobs[] | select(.name | contains(" / Wave "))] | length' <<< "$JOBS")
             if [ "$WAVE_JOBS" -gt 0 ]; then
-              echo "[Watchdog] Current 15-worker five-wave run $active_id is active."
-              exit 0
+              echo "[Watchdog] Current 15-worker round $active_id is active."
+              FOUND_NEW=1
+              continue
             fi
-            # Queued runs have no jobs yet. Allow GitHub's scheduler to begin.
-            # Only re-dispatch an old run when it is definitely the retired layout.
+            CREATED=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id" --jq '.created_at')
+            AGE=$(( $(date -u +%s) - $(date -u -d "$CREATED" +%s) ))
             if [ "$AGE" -lt 1200 ]; then
-              echo "[Watchdog] Recent dispatch $active_id is still starting."
-              exit 0
+              echo "[Watchdog] Recent round $active_id is still starting."
+              FOUND_NEW=1
+              continue
             fi
-            echo "[Watchdog] Run $active_id may still be initializing; no duplicate."
-            exit 0
+            echo "[Watchdog] Stale uninitialized round $active_id observed; new dispatch will recover."
           done
+          if [ "$FOUND_NEW" -gt 0 ]; then
+            exit 0
+          fi
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
           echo "[Watchdog] Restarted fifteen-worker continuous self-play."
 
