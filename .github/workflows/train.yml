@@ -196,7 +196,7 @@ jobs:
             --max-samples 20000
 
       - name: Preserve SPRT and training diagnostics
-        if: always()
+        if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: production-training-${{ github.run_id }}

@@ -1,162 +1,840 @@
 name: Continuous self-play and recovery
 
-# Five sequential waves per RUN; each wave = 15 CPU workers + one HF writer.
+# Exactly three visible active workflows:
+# 1. This file: five-wave self-play + HF recovery + public counters
+# 2. train.yml: training, tests and promotion
+# 3. deploy_pages.yml: GitHub Pages publishing
+# Cancellation: ALWAYS guard downstream work with !cancelled().
+# The scheduler must not restart after the most recent round was cancelled.
 on:
   workflow_dispatch:
     inputs:
       continuous:
-        description: "Backward-compatible flag; full five-wave run"
+        description: "Five waves (15 compute workers + one HF writer per wave)"
         type: boolean
         default: true
         required: false
   schedule:
-    - cron: "23 * * * *"
-    - cron: "43 3 1 * *"
+    - cron: "23 * * * *"      # hourly recovery watchdog
+    - cron: "17 */3 * * *"    # HF recovery + public counters
+    - cron: "43 3 1 * *"      # monthly Actions keepalive
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/self_play.yml"
 
 permissions:
   contents: write
   actions: write
 
 concurrency:
-  group: self-play-v2-${{ github.event_name == 'workflow_dispatch' && 'round' || 'watchdog' }}
+  group: self-play-v3-${{ github.event_name == 'workflow_dispatch' && 'round' || 'maintenance' }}
   cancel-in-progress: false
 
 jobs:
-  wave1:
-    if: github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/self_play_wave.yml
-    with:
-      wave: 1
-    secrets: inherit
-
-  wave2:
-    needs: wave1
-    # Do not discard four subsequent waves when a single CPU worker fails.
-    # Each wave's sole HF writer independently verifies durable batches.
+  wave1-workers:
+    name: Wave 1 / CPU worker ${{ matrix.worker_id }}
     if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/self_play_wave.yml
-    with:
-      wave: 2
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Generate games with bounded runtime and cancellation-aware child process
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.8"
+          EXPLORE_PLIES: "20"
+          SEARCH_MAX_SECONDS: "3.0"
+          POLICY_PRIOR_MIX: "0.15"
+          OPENING_SEARCH_DEPTH: "1"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          TORCH_NUM_THREADS: "1"
+          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=3000
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+      - name: Preserve completed game artifacts for central uploader
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-1-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
 
-  wave3:
-    needs: wave2
-    # Do not discard four subsequent waves when a single CPU worker fails.
-    # Each wave's sole HF writer independently verifies durable batches.
+  wave1-upload:
+    name: Wave 1 / worker 16 HF writer
+    needs: wave1-workers
     if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/self_play_wave.yml
-    with:
-      wave: 3
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install only HF and strict replay validation dependencies
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-1-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: Verify and upload one batch from all available worker artifacts
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "1"
+        run: |
+          set -euo pipefail
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 1 uploaded and verified."
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: Preserve upload data if HF rejects it
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-1-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
 
-  wave4:
-    needs: wave3
-    # Do not discard four subsequent waves when a single CPU worker fails.
-    # Each wave's sole HF writer independently verifies durable batches.
+  wave2-workers:
+    name: Wave 2 / CPU worker ${{ matrix.worker_id }}
+    needs: wave1-upload
     if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/self_play_wave.yml
-    with:
-      wave: 4
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Generate games with bounded runtime and cancellation-aware child process
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.8"
+          EXPLORE_PLIES: "20"
+          SEARCH_MAX_SECONDS: "3.0"
+          POLICY_PRIOR_MIX: "0.15"
+          OPENING_SEARCH_DEPTH: "1"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          TORCH_NUM_THREADS: "1"
+          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=3000
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+      - name: Preserve completed game artifacts for central uploader
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-2-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
 
-  wave5:
-    needs: wave4
-    # Do not discard four subsequent waves when a single CPU worker fails.
-    # Each wave's sole HF writer independently verifies durable batches.
+  wave2-upload:
+    name: Wave 2 / worker 16 HF writer
+    needs: wave2-workers
     if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/self_play_wave.yml
-    with:
-      wave: 5
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install only HF and strict replay validation dependencies
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-2-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: Verify and upload one batch from all available worker artifacts
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "2"
+        run: |
+          set -euo pipefail
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 2 uploaded and verified."
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: Preserve upload data if HF rejects it
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-2-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave3-workers:
+    name: Wave 3 / CPU worker ${{ matrix.worker_id }}
+    needs: wave2-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Generate games with bounded runtime and cancellation-aware child process
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.8"
+          EXPLORE_PLIES: "20"
+          SEARCH_MAX_SECONDS: "3.0"
+          POLICY_PRIOR_MIX: "0.15"
+          OPENING_SEARCH_DEPTH: "1"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          TORCH_NUM_THREADS: "1"
+          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=3000
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+      - name: Preserve completed game artifacts for central uploader
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-3-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave3-upload:
+    name: Wave 3 / worker 16 HF writer
+    needs: wave3-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install only HF and strict replay validation dependencies
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-3-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: Verify and upload one batch from all available worker artifacts
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "3"
+        run: |
+          set -euo pipefail
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 3 uploaded and verified."
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: Preserve upload data if HF rejects it
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-3-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave4-workers:
+    name: Wave 4 / CPU worker ${{ matrix.worker_id }}
+    needs: wave3-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Generate games with bounded runtime and cancellation-aware child process
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.8"
+          EXPLORE_PLIES: "20"
+          SEARCH_MAX_SECONDS: "3.0"
+          POLICY_PRIOR_MIX: "0.15"
+          OPENING_SEARCH_DEPTH: "1"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          TORCH_NUM_THREADS: "1"
+          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=3000
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+      - name: Preserve completed game artifacts for central uploader
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-4-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave4-upload:
+    name: Wave 4 / worker 16 HF writer
+    needs: wave4-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install only HF and strict replay validation dependencies
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-4-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: Verify and upload one batch from all available worker artifacts
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "4"
+        run: |
+          set -euo pipefail
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 4 uploaded and verified."
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: Preserve upload data if HF rejects it
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-4-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave5-workers:
+    name: Wave 5 / CPU worker ${{ matrix.worker_id }}
+    needs: wave4-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: Generate games with bounded runtime and cancellation-aware child process
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.8"
+          EXPLORE_PLIES: "20"
+          SEARCH_MAX_SECONDS: "3.0"
+          POLICY_PRIOR_MIX: "0.15"
+          OPENING_SEARCH_DEPTH: "1"
+          SEARCH_NODE_BUDGET_EARLY: "500"
+          SEARCH_NODE_BUDGET_MID: "1200"
+          SEARCH_NODE_BUDGET_LATE: "2500"
+          TORCH_NUM_THREADS: "1"
+          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=3000
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+      - name: Preserve completed game artifacts for central uploader
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-5-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave5-upload:
+    name: Wave 5 / worker 16 HF writer
+    needs: wave5-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install only HF and strict replay validation dependencies
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-5-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: Verify and upload one batch from all available worker artifacts
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "5"
+        run: |
+          set -euo pipefail
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 5 uploaded and verified."
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: Preserve upload data if HF rejects it
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-5-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
 
   continue-next-cycle:
-    needs: wave5
+    needs: wave5-upload
     if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Start next run then dispatch training if last train was over six hours ago
+      - name: Continue only after confirmed HF uploads and before cancellation
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Never spin up another costly round if all five central HF writers
-          # failed. An hourly watchdog can retry after HF/auth is repaired.
           VERIFIED_WRITERS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
             --jq '[.jobs[] | select(.name | contains("worker 16 HF writer")) | select(.conclusion == "success")] | length')
           if [ "$VERIFIED_WRITERS" -eq 0 ]; then
-            echo "::error::Zero verified HF writers in this run; refusing an endless failing loop."
+            echo "::error::No verified upload waves; watchdog can retry later."
             exit 1
           fi
-          echo "[Autonomy] $VERIFIED_WRITERS verified upload waves; safe to continue."
-          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Autonomy] Dispatched next five-wave run."
-          LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // ""')
-          if [ -n "$LAST_TRAIN" ]; then
-            AGE=$(( $(date -u +%s) - $(date -u -d "$LAST_TRAIN" +%s) ))
-            if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 21600 ]; then
-              echo "[Autonomy] Training already dispatched ${AGE}s ago."
-              exit 0
-            fi
+          # A cancelled round is never permitted to dispatch its successor.
+          CURRENT_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.status')
+          if [ "$CURRENT_STATUS" != "in_progress" ]; then
+            echo "::notice::Parent run not active ($CURRENT_STATUS); stop continuation."
+            exit 0
           fi
-          gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Autonomy] NNUE training dispatched."
+          echo "[Autonomy] $VERIFIED_WRITERS upload waves verified."
+          LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=40" \
+            --jq '[.workflow_runs[] | select(.event != "push")][0].created_at // ""')
+          if [ -z "$LAST_TRAIN" ] || [ $(( $(date -u +%s) - $(date -u -d "$LAST_TRAIN" +%s) )) -ge 21600 ]; then
+            gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
+            echo "[Autonomy] Production NNUE training dispatched."
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Autonomy] Next five-wave round dispatched."
 
   recovery-watchdog:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '23 * * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Restart self-play only when no round is active
+      - name: Restart only after non-cancelled rounds
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Earlier runs may still use the retired four-worker layout.
-          # Do not let them prevent the first 15-worker run from starting.
-          ACTIVE_IDS=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
-            --jq '.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed") | .id')
-          FOUND_NEW=0
-          # Inspect ALL active runs before deciding. Previously an early return
-          # on the new run left the old four-worker jobs wasting free runners.
-          for active_id in $ACTIVE_IDS; do
-            JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100")
-            LEGACY_JOBS=$(jq '[.jobs[] | select(.name | startswith("self-play-worker"))] | length' <<< "$JOBS")
-            if [ "$LEGACY_JOBS" -gt 0 ]; then
-              echo "[Watchdog] Cancelling obsolete four-worker run $active_id."
-              gh run cancel "$active_id" --repo "$GITHUB_REPOSITORY" || true
-              continue
-            fi
-            WAVE_JOBS=$(jq '[.jobs[] | select(.name | contains(" / Wave "))] | length' <<< "$JOBS")
-            if [ "$WAVE_JOBS" -gt 0 ]; then
-              echo "[Watchdog] Current 15-worker round $active_id is active."
-              FOUND_NEW=1
-              continue
-            fi
-            CREATED=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id" --jq '.created_at')
-            AGE=$(( $(date -u +%s) - $(date -u -d "$CREATED" +%s) ))
-            if [ "$AGE" -lt 1200 ]; then
-              echo "[Watchdog] Recent round $active_id is still starting."
-              FOUND_NEW=1
-              continue
-            fi
-            echo "[Watchdog] Stale uninitialized round $active_id observed; new dispatch will recover."
-          done
-          if [ "$FOUND_NEW" -gt 0 ]; then
+          # Manual cancellation means PAUSED, until the user dispatches a round.
+          # This persists without a separate repository variable or workflow.
+          RECENT=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=1")
+          LATEST_STATUS=$(jq -r '.workflow_runs[0].status // ""' <<< "$RECENT")
+          LATEST_RESULT=$(jq -r '.workflow_runs[0].conclusion // ""' <<< "$RECENT")
+          if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" = "cancelled" ]; then
+            echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
+            exit 0
+          fi
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "[Watchdog] $ACTIVE round(s) already active; no duplicate dispatch."
             exit 0
           fi
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Watchdog] Restarted fifteen-worker continuous self-play."
+          echo "[Watchdog] Started one new self-play round."
 
-      - name: Checkout for monthly keepalive
-        if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
-        uses: actions/checkout@v4
+  maintenance:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '17 */3 * * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install HF recovery and status dependencies
+        run: pip install numpy numba huggingface_hub
+      - name: Retry failed HF uploader artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MAX_RECOVERY_GROUPS: "4"
+        run: python -u src/workers/recover_failed_uploads.py
+      - name: Count unique verified self-play games
+        if: ${{ always() && !cancelled() }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u .github/scripts/publish_training_status.py
+      - name: Safely publish status without overwriting promoted champions
+        if: ${{ always() && !cancelled() }}
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/public/training-status.json
+          if git diff --staged --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: publish verified self-play progress"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin master
+            if ! git rebase origin/master; then
+              git rebase --abort || true
+              echo "::error::Training status conflict; existing data preserved."
+              exit 1
+            fi
+            if git push origin HEAD:master; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$((attempt * 3))"
+          done
+          echo "::error::Could not push verified counters."
+          exit 1
+      - name: Redeploy public counters only if values changed
+        if: ${{ !cancelled() && steps.publish.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+
+  monthly-keepalive:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 1
-
-      - name: Keep scheduled Actions active with an empty commit
-        if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
+      - name: Keep scheduled Actions alive once a month
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -165,10 +843,33 @@ jobs:
             git fetch origin master
             git checkout -B master origin/master
             git commit --allow-empty -m "chore: monthly Actions schedule keepalive"
-            if git push origin master; then
-              echo "[Keepalive] Updated repository activity without changing files."
-              exit 0
-            fi
+            if git push origin master; then exit 0; fi
           done
-          echo "::error::Unable to push monthly keepalive after three attempts."
           exit 1
+
+  clean-retired-workflows:
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[cleanup-workflows]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Remove completed runs for retired workflow names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Removing YAML leaves historic workflow entries visible in Actions.
+          # Delete only completed runs belonging to three retired workflows.
+          RETIRED=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" \
+            --jq '.workflows[] | select(.name == "One-time cleanup of completed Actions runs" or .name == "Publish training status" or .name == "Self-play wave / 15 workers + one HF uploader") | .id')
+          for workflow_id in $RETIRED; do
+            for pass in 1 2 3 4 5; do
+              RUNS=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?per_page=100" \
+                --jq '.workflow_runs[] | select(.status == "completed") | .id') || break
+              if [ -z "$RUNS" ]; then break; fi
+              while IFS= read -r run_id; do
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" >/dev/null || true
+              done <<< "$RUNS"
+            done
+          done
+          echo "[Cleanup] Retired workflows have no active YAML; completed history pruned."

@@ -18,7 +18,8 @@ permissions:
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  # A newer deployment replaces stale builds; manual Cancel ends this run.
+  cancel-in-progress: true
 
 jobs:
   build:
