@@ -17,7 +17,11 @@ on:
     paths:
       - ".github/workflows/self_play.yml"
       - ".github/workflows/self_play_wave.yml"
-      - "test/test_autonomous_loop.py"
+      - ".github/workflows/train.yml"
+      - ".github/scripts/publish_training_status.py"
+      - "src/training/**"
+      - "src/workers/**"
+      - "test/**"
 
 permissions:
   contents: write
