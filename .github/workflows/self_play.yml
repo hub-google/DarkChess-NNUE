@@ -18,10 +18,6 @@ on:
     - cron: "23 * * * *"      # hourly recovery watchdog
     - cron: "17 */3 * * *"    # HF recovery + public counters
     - cron: "43 3 1 * *"      # monthly Actions keepalive
-  push:
-    branches: [master]
-    paths:
-      - ".github/workflows/self_play.yml"
 
 permissions:
   contents: write
@@ -846,30 +842,3 @@ jobs:
             if git push origin master; then exit 0; fi
           done
           exit 1
-
-  clean-retired-workflows:
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[cleanup-workflows]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Remove completed runs for retired workflow names
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Removing YAML leaves historic workflow entries visible in Actions.
-          # Delete only completed runs belonging to three retired workflows.
-          RETIRED=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows?per_page=100" \
-            --jq '.workflows[] | select(.name == "One-time cleanup of completed Actions runs" or .name == "Publish training status" or .name == "Self-play wave / 15 workers + one HF uploader") | .id')
-          for workflow_id in $RETIRED; do
-            for pass in 1 2 3 4 5; do
-              RUNS=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?per_page=100" \
-                --jq '.workflow_runs[] | select(.status == "completed") | .id') || break
-              if [ -z "$RUNS" ]; then break; fi
-              while IFS= read -r run_id; do
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" >/dev/null || true
-              done <<< "$RUNS"
-            done
-          done
-          echo "[Cleanup] Retired workflows have no active YAML; completed history pruned."
