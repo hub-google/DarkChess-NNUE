@@ -127,18 +127,6 @@ jobs:
           TRAINING_CACHE_DIR: "training_cache"
         run: python -u src/training/train.py
 
-      - name: Train optional Policy teacher head on CPU
-        if: steps.enough_games.outputs.ready == 'true'
-        env:
-          TORCH_NUM_THREADS: "1"
-        run: |
-          python -u src/training/policy_train.py \
-            --cache-dir training_cache \
-            --champion models/champion.policy \
-            --challenger models/challenger.policy \
-            --epochs 1 \
-            --max-samples 100000
-
       - name: Validate challenger against champion
         if: steps.enough_games.outputs.ready == 'true'
         id: validate
@@ -155,6 +143,19 @@ jobs:
             --elo0 -20 \
             --elo1 20 \
             --output sprt_results.json
+
+      - name: Train optional Policy teacher head on CPU
+        if: steps.validate.outputs.passed == 'true'
+        continue-on-error: true
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          timeout --signal=TERM --kill-after=15s 600s python -u src/training/policy_train.py \
+            --cache-dir training_cache \
+            --champion models/champion.policy \
+            --challenger models/challenger.policy \
+            --epochs 1 \
+            --max-samples 20000
 
       - name: Preserve SPRT and training diagnostics
         if: always()
