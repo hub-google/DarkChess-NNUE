@@ -18,7 +18,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  recover-failed-hf:
+    # Reuse this existing workflow instead of creating another scheduled Action.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.name == 'Continuous self-play and recovery' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install replay validation and HF recovery dependencies
+        run: pip install numpy numba huggingface_hub
+      - name: Restore failed batches from GitHub Artifacts to Hugging Face
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MAX_RECOVERY_GROUPS: "4"
+        run: python -u src/workers/recover_failed_uploads.py
+
   publish:
+    if: always()
+    needs: recover-failed-hf
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
