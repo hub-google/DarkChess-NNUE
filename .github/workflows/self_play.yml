@@ -17,6 +17,7 @@ on:
     paths:
       - ".github/workflows/self_play.yml"
       - ".github/workflows/self_play_wave.yml"
+      - "test/test_autonomous_loop.py"
 
 permissions:
   contents: write
