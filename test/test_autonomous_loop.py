@@ -39,3 +39,26 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("replay_gate.py", code)
         self.assertIn("steps.validate.outputs.passed == 'true'", code)
         self.assertIn('cron: "41 3 * * *"', code)
+
+    def test_watchdog_recovers_stalled_self_play(self):
+        code = self.read("self_play.yml")
+        self.assertIn("recovery-watchdog:", code)
+        self.assertIn('cron: "23 * * * *"', code)
+        self.assertIn("actions/workflows/self_play.yml/runs", code)
+        self.assertIn('status != "completed"', code)
+        self.assertIn("gh workflow run self_play.yml", code)
+
+    def test_training_handoff_after_fifth_wave(self):
+        code = self.read("self_play.yml")
+        self.assertIn("continue-next-cycle:", code)
+        self.assertIn("needs: wave5", code)
+        self.assertIn("needs.wave5.result == 'success'", code)
+        self.assertIn("gh workflow run train.yml", code)
+        self.assertIn("LAST_TRAIN=", code)
+        self.assertIn("21600", code)
+
+    def test_monthly_actions_keepalive(self):
+        code = self.read("self_play.yml")
+        self.assertIn('cron: "43 3 1 * *"', code)
+        self.assertIn("git commit --allow-empty", code)
+        self.assertIn("Keep scheduled Actions active with an empty commit", code)
