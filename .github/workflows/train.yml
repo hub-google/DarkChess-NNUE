@@ -6,6 +6,15 @@ on:
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
+  # Code-only CI; do not launch expensive self-play/training on pushes.
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/train.yml"
+      - "src/training/train.py"
+      - "src/training/symmetry_eval.py"
+      - "test/test_training_augmentation.py"
+      - "test/test_symmetry_eval.py"
 
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
@@ -14,7 +23,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  symmetry-unit-tests:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install test dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy numba
+      - name: Validate symmetry group, legal moves, policy masks and model audit
+        run: python -m unittest test.test_training_augmentation test.test_symmetry_eval -v
+
   train-and-promote:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 345
     permissions:
@@ -119,7 +146,23 @@ jobs:
           MAX_POSITIONS_PER_GAME: "4"
           MAX_TRAINING_SAMPLES: "2000000"
           TRAINING_CACHE_DIR: "training_cache"
+          SYMMETRY_AUGMENTATION: "true"
+          COLOR_SWAP_AUGMENTATION: "true"
+          SYMMETRY_CONSISTENCY_WEIGHT: "0.02"
+          SYMMETRY_CONSISTENCY_EVERY: "4"
         run: python -u src/training/train.py
+
+      - name: Measure challenger and champion symmetry errors
+        if: steps.enough_games.outputs.ready == 'true'
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/training/symmetry_eval.py \
+            --cache-dir training_cache \
+            --model models/champion.nnue \
+            --model models/challenger.nnue \
+            --samples 256 \
+            --output symmetry_report.json
 
       - name: Validate challenger against champion
         if: steps.enough_games.outputs.ready == 'true'
@@ -159,6 +202,7 @@ jobs:
           path: |
             training_cache/manifest.json
             sprt_results.json
+            symmetry_report.json
             models/challenger.nnue
             models/challenger.policy
           if-no-files-found: warn

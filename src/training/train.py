@@ -6,6 +6,7 @@ import glob
 import gzip
 import json
 import zlib
+from functools import lru_cache
 import numpy as np
 from torch.utils.data import IterableDataset, DataLoader
 from board import DarkChessBoardPy, INITIAL_COUNTS
@@ -149,45 +150,38 @@ def transform_square(square, transform):
     return row * BOARD_COLS + col
 
 
-def augment_features(features, target, transform=SYM_IDENTITY, color_swap=False):
-    """
-    Apply an exact game symmetry without duplicating replay files.
+@lru_cache(maxsize=16)
+def feature_permutation(input_size=CURRENT_INPUT_SIZE, transform=SYM_IDENTITY, color_swap=False):
+    """Immutable destination-to-source indices for the exact 4x8 x color group.
 
-    Geometry keeps the Red-perspective target unchanged. Swapping Red/Black
-    piece identities also swaps side-to-move and negates the Red-perspective
-    value target.
+    Geometry preserves the Red-perspective value. Color reversal exchanges
+    both piece identities and remaining-count channels, and reverses the
+    Red-perspective value. Public draw-state features remain unchanged.
     """
-    transformed = np.zeros_like(features)
-
+    if input_size not in (LEGACY_INPUT_SIZE, CURRENT_INPUT_SIZE):
+        raise ValueError(f"unsupported feature size: {input_size}")
+    if transform not in range(SYMMETRY_COUNT):
+        raise ValueError(f"invalid rectangle symmetry: {transform}")
+    perm = list(range(input_size))
     for square in range(32):
-        mapped = transform_square(square, transform)
-        src = square * 15
-        dst = mapped * 15
-        transformed[dst:dst + 15] = features[src:src + 15]
-
-    transformed[480:494] = features[480:494]
-    if len(features) > 494:
-        transformed[494:] = features[494:]
-
+        destination = transform_square(square, transform)
+        for channel in range(15):
+            source_channel = (channel + 7) % 14 if color_swap and channel < 14 else channel
+            perm[destination * 15 + channel] = square * 15 + source_channel
     if color_swap:
-        for square in range(32):
-            base = square * 15
-            red_channels = transformed[base:base + 7].copy()
-            transformed[base:base + 7] = transformed[base + 7:base + 14]
-            transformed[base + 7:base + 14] = red_channels
+        for channel in range(14):
+            perm[480 + channel] = 480 + (channel + 7) % 14
+        if input_size == CURRENT_INPUT_SIZE:
+            perm[494], perm[495] = 495, 494
+    return tuple(perm)
 
-        red_counts = transformed[480:487].copy()
-        transformed[480:487] = transformed[487:494]
-        transformed[487:494] = red_counts
 
-        if len(transformed) >= CURRENT_INPUT_SIZE:
-            red_to_move = float(transformed[494])
-            transformed[494] = transformed[495]
-            transformed[495] = red_to_move
-
-        target = -float(target)
-
-    return transformed, float(target)
+def augment_features(features, target, transform=SYM_IDENTITY, color_swap=False):
+    """One lossless symmetry sample, without multiplying saved replay files."""
+    features = np.asarray(features)
+    permutation = feature_permutation(len(features), transform, bool(color_swap))
+    transformed = np.take(features, permutation)
+    return transformed, (-float(target) if color_swap else float(target))
 
 
 def _env_enabled(name, default=True):
@@ -459,6 +453,24 @@ def main():
         )
     symmetry_augmentation = _env_enabled("SYMMETRY_AUGMENTATION", True)
     color_swap_augmentation = _env_enabled("COLOR_SWAP_AUGMENTATION", True)
+    consistency_weight = float(os.environ.get("SYMMETRY_CONSISTENCY_WEIGHT", "0.02"))
+    consistency_every = int(os.environ.get("SYMMETRY_CONSISTENCY_EVERY", "4"))
+    if not np.isfinite(consistency_weight) or consistency_weight < 0:
+        raise ValueError("SYMMETRY_CONSISTENCY_WEIGHT must be finite and nonnegative")
+    if consistency_every <= 0:
+        raise ValueError("SYMMETRY_CONSISTENCY_EVERY must be positive")
+    # Only seven non-identity group elements. Index permutations are prepared
+    # once, so the extra model forward is needed on only 1/N minibatches.
+    consistency_pairs = [
+        (torch.tensor(feature_permutation(CURRENT_INPUT_SIZE, sym, swap), dtype=torch.long),
+         -1.0 if swap else 1.0)
+        for swap in (False, True)
+        for sym in range(SYMMETRY_COUNT)
+        if sym != SYM_IDENTITY or swap
+    ]
+    consistency_rng = np.random.default_rng(
+        int(os.environ.get("SYMMETRY_CONSISTENCY_SEED", "20261024"))
+    )
     cache_dir = os.environ.get("TRAINING_CACHE_DIR", "training_cache")
     cache_files = glob.glob(os.path.join(cache_dir, "cache_*.npz"))
     if cache_files:
@@ -489,7 +501,8 @@ def main():
     print(
         f"Hyperparameters: lr={learning_rate}, batch_size={batch_size}, "
         f"epochs={epochs}, symmetry_augmentation={symmetry_augmentation}, "
-        f"color_swap_augmentation={color_swap_augmentation}"
+        f"color_swap_augmentation={color_swap_augmentation}, "
+        f"consistency_weight={consistency_weight}, consistency_every={consistency_every}"
     )
     print("Training loop ready.")
 
@@ -504,6 +517,14 @@ def main():
             optimizer.zero_grad()
             outputs = model(features)
             loss = td_loss(outputs, targets)
+            if consistency_weight and (batches + 1) % consistency_every == 0:
+                pair_index = int(consistency_rng.integers(len(consistency_pairs)))
+                permutation, sign = consistency_pairs[pair_index]
+                paired_outputs = model(features.index_select(1, permutation))
+                # Compare the same state under a randomly chosen exact symmetry.
+                # Color reversal negates a Red-perspective value prediction.
+                symmetry_loss = nn.functional.mse_loss(outputs, sign * paired_outputs)
+                loss = loss + consistency_weight * symmetry_loss
             loss.backward()
             optimizer.step()
             

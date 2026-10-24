@@ -14,6 +14,7 @@ from train import (
     SYM_ROTATE_180,
     SYM_UP_DOWN,
     augment_features,
+    feature_permutation,
     transform_square,
 )
 
@@ -48,6 +49,30 @@ class TrainingAugmentationTests(unittest.TestCase):
         self.assertEqual(transformed[21 * 15 + 14], 1.0)
         self.assertEqual(transformed[494], 1.0)
         self.assertAlmostEqual(target, 0.625)
+
+    def test_all_eight_permutations_are_exact_involutions(self):
+        features = np.arange(CURRENT_INPUT_SIZE, dtype=np.float32)
+        for symmetry in range(4):
+            for color_swap in (False, True):
+                permutation = np.array(
+                    feature_permutation(CURRENT_INPUT_SIZE, symmetry, color_swap)
+                )
+                self.assertEqual(len(np.unique(permutation)), CURRENT_INPUT_SIZE)
+                np.testing.assert_array_equal(permutation[permutation],
+                                              np.arange(CURRENT_INPUT_SIZE))
+                transformed, value = augment_features(
+                    features, 0.7, transform=symmetry, color_swap=color_swap
+                )
+                np.testing.assert_array_equal(transformed, features[permutation])
+                restored, second_value = augment_features(
+                    transformed, value, transform=symmetry, color_swap=color_swap
+                )
+                np.testing.assert_array_equal(restored, features)
+                self.assertAlmostEqual(second_value, 0.7)
+
+    def test_unsupported_square_symmetry_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "rectangle symmetry"):
+            feature_permutation(CURRENT_INPUT_SIZE, 4)
 
     def test_color_swap_swaps_piece_counts_and_side_and_negates_target(self):
         features = np.zeros(CURRENT_INPUT_SIZE, dtype=np.float32)
