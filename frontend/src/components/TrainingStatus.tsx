@@ -80,7 +80,10 @@ export function TrainingStatus() {
       if (results[3].status === 'fulfilled') setTrain(results[3].value.workflow_runs[0])
     }
     void load()
-    const timer = window.setInterval(load, 120_000)
+    // Three unauthenticated GitHub REST requests per poll. Two-minute polling
+    // hits GitHub's shared 60 requests/hour anonymous limit; five minutes stays
+    // below that threshold for a single browser while retaining useful status.
+    const timer = window.setInterval(load, 300_000)
     return () => { active = false; window.clearInterval(timer) }
   }, [])
 
