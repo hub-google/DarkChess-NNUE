@@ -65,6 +65,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
     def test_new_round_does_not_stall_after_one_failed_cpu_worker(self):
         code = self.read("self_play.yml")
         self.assertIn("group: self-play-v2-", code)
+        self.assertIn('contains(" / Wave ")', code)
         for i in range(2, 6):
             block = code.split(f"  wave{i}:")[1].split("    uses:")[0]
             self.assertIn("always()", block)
