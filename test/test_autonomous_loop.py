@@ -54,6 +54,8 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("needs: wave5", code)
         self.assertIn("always() && !cancelled()", code)
         self.assertIn("gh workflow run train.yml", code)
+        self.assertIn('worker 16 HF writer', code)
+        self.assertIn('Zero verified HF writers', code)
         self.assertIn("LAST_TRAIN=", code)
         self.assertIn("21600", code)
 
