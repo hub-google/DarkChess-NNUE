@@ -39,7 +39,8 @@ jobs:
           python-version: "3.10"
       - name: Validate YAML syntax, five-wave wiring and HF upload safety
         run: |
-          pip install PyYAML numpy numba huggingface_hub
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install PyYAML -r requirements.txt
           python - <<'PY'
           from pathlib import Path
           import yaml
@@ -49,8 +50,7 @@ jobs:
               assert isinstance(obj, dict) and "jobs" in obj
               print("[Contract] Parsed", path)
           PY
-          python -m unittest discover -s test -p "test_autonomous_loop.py" -v
-          python -m unittest discover -s test -p "test_upload_batch.py" -v
+          python -m unittest discover -s test -p "test_*.py" -v
 
   wave1:
     if: github.event_name == 'workflow_dispatch'
@@ -143,7 +143,7 @@ jobs:
             STARTED=${META%% *}
             AGE=$(( $(date -u +%s) - $(date -u -d "$STARTED" +%s) ))
             WAVE_JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name | startswith("Wave "))] | length')
+              --jq '[.jobs[] | select(.name | contains(" / Wave "))] | length')
             if [ "$WAVE_JOBS" -gt 0 ]; then
               echo "[Watchdog] Current 15-worker five-wave run $active_id is active."
               exit 0
