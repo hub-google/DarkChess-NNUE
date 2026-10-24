@@ -80,6 +80,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Never spin up another costly round if all five central HF writers
+          # failed. An hourly watchdog can retry after HF/auth is repaired.
+          VERIFIED_WRITERS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name | contains("worker 16 HF writer")) | select(.conclusion == "success")] | length')
+          if [ "$VERIFIED_WRITERS" -eq 0 ]; then
+            echo "::error::Zero verified HF writers in this run; refusing an endless failing loop."
+            exit 1
+          fi
+          echo "[Autonomy] $VERIFIED_WRITERS verified upload waves; safe to continue."
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
           echo "[Autonomy] Dispatched next five-wave run."
           LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // ""')
