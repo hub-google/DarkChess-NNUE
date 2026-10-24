@@ -6,6 +6,12 @@ on:
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
+  # Changes to the production training pipeline should be tested in a real
+  # training run rather than waiting until tomorrow's scheduled attempt.
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/train.yml"
 
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
