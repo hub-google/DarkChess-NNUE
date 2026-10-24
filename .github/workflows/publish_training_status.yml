@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
   workflow_run:
     workflows:
-      - Continuous self-play and recovery
       - Train and promote NNUE
     types: [completed]
   schedule:
