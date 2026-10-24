@@ -83,7 +83,7 @@ jobs:
     needs: workers
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 16
+    timeout-minutes: 25
     concurrency:
       group: darkchess-hf-stage-writer
       cancel-in-progress: false
@@ -100,11 +100,27 @@ jobs:
           path: output_data
           merge-multiple: true
       - name: Verify and upload one batch from all available worker artifacts
+        shell: bash
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           WORKER_ID: "16"
           WAVE: ${{ inputs.wave }}
-        run: python -u src/workers/upload_batch.py
+        run: |
+          set -euo pipefail
+          # Each invocation retries 7 HF requests and preserves originals.
+          # Try a second complete cycle before declaring a failed wave.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave ${WAVE} durably uploaded and verified."
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer cycle failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::HF data remains in recovery artifacts; no silent data loss."
+          exit 1
       - name: Preserve upload data if HF rejects it
         if: failure()
         uses: actions/upload-artifact@v4
