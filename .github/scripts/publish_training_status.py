@@ -27,12 +27,16 @@ def main() -> None:
     api = HfApi(token=token)
     # Listing the repo root also walks giant archival subtrees. List only the
     # live staging folder and the known canonical replay path.
-    staged = [
-        entry.path for entry in api.list_repo_tree(
-            repo_id=REPO_ID, path_in_repo="staging",
-            recursive=True, repo_type="dataset",
-        ) if getattr(entry, "path", "").endswith(".jsonl.gz")
-    ]
+    try:
+        staged = [
+            entry.path for entry in api.list_repo_tree(
+                repo_id=REPO_ID, path_in_repo="staging",
+                recursive=True, repo_type="dataset",
+            ) if getattr(entry, "path", "").endswith(".jsonl.gz")
+        ]
+    except EntryNotFoundError:
+        staged = []
+        print("[Training Status] No staging batches yet.")
     replay_games = 0
     staging_games = 0
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -64,6 +68,14 @@ def main() -> None:
         "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     output = Path("frontend/public/training-status.json")
+    if output.exists():
+        try:
+            previous = json.loads(output.read_text(encoding="utf-8"))
+            if all(previous.get(key) == summary[key] for key in ("replayGames", "stagingGames", "totalGames")):
+                print("[Training Status] Counts unchanged; no Pages redeployment needed.")
+                return
+        except (ValueError, TypeError):
+            pass
     output.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Published training summary: {summary['totalGames']} games")
 

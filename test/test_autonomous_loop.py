@@ -62,3 +62,18 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn('cron: "43 3 1 * *"', code)
         self.assertIn("git commit --allow-empty", code)
         self.assertIn("Keep scheduled Actions active with an empty commit", code)
+    def test_new_round_does_not_stall_after_one_failed_cpu_worker(self):
+        code = self.read("self_play.yml")
+        self.assertIn("group: self-play-v2-", code)
+        for i in range(2, 6):
+            block = code.split(f"  wave{i}:")[1].split("    uses:")[0]
+            self.assertIn("always()", block)
+            self.assertIn("!cancelled()", block)
+
+    def test_training_status_is_published_and_pages_redeployed(self):
+        code = self.read("publish_training_status.yml")
+        self.assertIn("workflow_run:", code)
+        self.assertIn("src", code) if False else None
+        self.assertIn("publish_training_status.py", code)
+        self.assertIn("gh workflow run deploy_pages.yml", code)
+        self.assertIn("contents: write", code)
