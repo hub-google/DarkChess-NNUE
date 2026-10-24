@@ -36,7 +36,7 @@ class UploadValidationTests(unittest.TestCase):
             with self.subTest(bad=bad), tempfile.TemporaryDirectory() as folder:
                 target = Path(folder) / "bad.jsonl.gz"
                 with gzip.open(target, "wt", encoding="utf-8") as out:
-                    out.write(json.dumps(bad) + "\\n")
+                    out.write(json.dumps(bad) + "\n")
                 with (patch.dict(os.environ, {"OUTPUT_DIR": folder, "HF_TOKEN": "fake"}),
                       patch.object(upload_batch, "validate_record"),
                       patch.object(upload_batch, "HfApi") as hf):
