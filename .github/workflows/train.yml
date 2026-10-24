@@ -19,7 +19,7 @@ on:
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
   # deletes only the cutoff-bounded snapshot that it successfully verifies.
-  group: nnue-training
+  group: nnue-training-${{ github.event_name == 'push' && 'symmetry-ci' || 'production' }}
   cancel-in-progress: false
 
 jobs:
