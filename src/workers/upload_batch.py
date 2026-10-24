@@ -1,110 +1,98 @@
-import os
+"""Single HF writer: verify, de-duplicate and store immutable batch from 15 artifacts."""
 import glob
 import gzip
-import time
-import uuid
+import hashlib
 import json
+import os
 import sys
+import tempfile
+import time
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, hf_hub_download
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "training"))
 from validate_replay import validate_record
 
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
+MAX_ATTEMPTS = 7
 
 
 def merge_and_upload():
-    output_dir = 'output_data'
-    files = sorted(glob.glob(os.path.join(output_dir, '*.jsonl.gz')))
-    if not files:
-        raise RuntimeError("No completed games to upload; failing worker rather than reporting false success.")
-
-    # 1. Merge all local .jsonl.gz files into a single consolidated file
-    merged_lines = []
-    valid_source_files = []
-    for f in files:
-        file_records = []
+    directory = Path(os.environ.get("OUTPUT_DIR", "output_data"))
+    sources = sorted(Path(f) for f in glob.glob(str(directory / "*.jsonl.gz")))
+    if not sources:
+        raise RuntimeError("No completed games to upload; original artifacts are retained.")
+    records = {}
+    for source in sources:
+        found = 0
+        with gzip.open(source, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                game = json.loads(line)
+                validate_record(game)
+                game_id = game["id"]
+                serialized = json.dumps(game, sort_keys=True, separators=(",", ":"))
+                if game_id in records and records[game_id] != serialized:
+                    raise RuntimeError(f"Conflicting replay records for {game_id}")
+                records[game_id] = serialized
+                found += 1
+        if not found:
+            raise RuntimeError(f"Empty completed-game artifact: {source}")
+    if not records:
+        raise RuntimeError("No valid completed games.")
+    lines = [records[game_id] for game_id in sorted(records)]
+    plain = ("\n".join(lines) + "\n").encode("utf-8")
+    digest = hashlib.sha256(plain).hexdigest()[:20]
+    earliest = min(int(json.loads(line)["ts"]) // 1000 for line in lines)
+    if earliest <= 0:
+        raise RuntimeError("Invalid game timestamp.")
+    date = time.strftime("%Y%m%d", time.gmtime(earliest))
+    filename = f"batch_{earliest}_{digest}.jsonl.gz"
+    folder = os.environ.get("PATH_IN_REPO", f"staging/worker_{os.environ.get('WORKER_ID', '16')}/{date}")
+    remote_path = f"{folder.rstrip('/')}/{filename}"
+    archive = directory / filename
+    with archive.open("wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as gz:
+            gz.write(plain)
+    expected = hashlib.sha256(archive.read_bytes()).hexdigest()
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        raise RuntimeError("HF_TOKEN missing; no upload attempted.")
+    api = HfApi(token=token)
+    last_error = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            with gzip.open(f, 'rt', encoding='utf-8') as gz:
-                for line in gz:
-                    if not line.strip():
-                        continue
-                    record = json.loads(line)
-                    validate_record(record)
-                    file_records.append(json.dumps(record, separators=(",", ":")) + "\n")
-        except Exception as exc:
-            # Never upload an unverifiable game or delete its original file.
-            raise RuntimeError(f"Refusing invalid self-play file {f}: {exc}") from exc
-        if not file_records:
-            raise RuntimeError(f"Refusing empty self-play file {f}")
-        merged_lines.extend(file_records)
-        valid_source_files.append(f)
-
-    if not merged_lines:
-        raise RuntimeError("No valid completed game records found for upload.")
-    print(f"Verified {len(merged_lines)} terminal game records from {len(files)} files.")
-
-    # 2. Determine remote path
-    path_in_repo = os.environ.get('PATH_IN_REPO')
-    if not path_in_repo:
-        worker_id = os.environ.get('WORKER_ID', '1')
-        date_str = os.environ.get('DATE_STR', time.strftime('%Y%m%d'))
-        path_in_repo = f"staging/worker_{worker_id}/{date_str}"
-
-    # 3. Write consolidated file locally
-    timestamp = int(time.time())
-    consolidated_filename = f'batch_{timestamp}_{uuid.uuid4().hex[:12]}.jsonl.gz'
-    consolidated_file = os.path.join(output_dir, consolidated_filename)
-    with gzip.open(consolidated_file, 'wt', encoding='utf-8') as gz:
-        gz.writelines(merged_lines)
-
-    file_size_kb = os.path.getsize(consolidated_file) / 1024
-    print(f"Consolidated file: {consolidated_file} ({file_size_kb:.1f} KB)")
-
-    # 4. Upload single file (NOT upload_folder) to avoid 10k file limit issue
-    #    upload_file only touches the one file being uploaded, so it doesn't
-    #    trigger HF's per-directory file count check on existing files.
-    remote_path = f"{path_in_repo}/{consolidated_filename}"
-    print(f"Uploading {consolidated_file} -> {remote_path} ...")
-
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        raise RuntimeError("HF_TOKEN is required")
-    api = HfApi(token=hf_token)
-    max_retries = 5
-    for attempt in range(1, max_retries + 1):
-        try:
-            api.upload_file(
-                path_or_fileobj=consolidated_file,
-                path_in_repo=remote_path,
-                repo_id=REPO_ID,
-                repo_type='dataset',
-                commit_message=f"Add batch {consolidated_filename}"
-            )
-            print(f"Upload complete: {remote_path}")
+            if not api.file_exists(repo_id=REPO_ID, repo_type="dataset", filename=remote_path):
+                api.upload_file(
+                    path_or_fileobj=str(archive), path_in_repo=remote_path,
+                    repo_id=REPO_ID, repo_type="dataset",
+                    commit_message=f"Verified wave {os.environ.get('WAVE', '?')}: {len(records)} games",
+                )
+            # Verify real durable remote bytes; retries use the exact same key.
+            with tempfile.TemporaryDirectory() as tmp:
+                remote = hf_hub_download(
+                    repo_id=REPO_ID, repo_type="dataset", filename=remote_path,
+                    token=token, local_dir=tmp, force_download=True,
+                )
+                actual = hashlib.sha256(Path(remote).read_bytes()).hexdigest()
+            if actual != expected:
+                raise RuntimeError(f"Remote SHA-256 differs from local batch: {remote_path}")
+            print(f"[HF Writer] VERIFIED {len(records)} valid unique games at {remote_path}")
             break
-        except Exception as e:
-            error_msg = str(e)
-            if '429' in error_msg or 'Rate' in error_msg.lower():
-                wait = min(60 * attempt, 300)
-                print(f"Rate limited (attempt {attempt}/{max_retries}). Waiting {wait}s...")
-                time.sleep(wait)
-            elif attempt < max_retries:
-                print(f"Upload error (attempt {attempt}/{max_retries}): {e}")
-                time.sleep(10 * attempt)
-            else:
-                print(f"Upload failed after {max_retries} attempts: {e}")
-                if os.path.exists(consolidated_file):
-                    os.remove(consolidated_file)
-                raise
-
-    # Delete local source data only after the remote upload succeeds.
-    for source_file in valid_source_files:
-        if os.path.abspath(source_file) != os.path.abspath(consolidated_file):
-            os.remove(source_file)
-    os.remove(consolidated_file)
+        except Exception as error:
+            last_error = error
+            if attempt == MAX_ATTEMPTS:
+                raise RuntimeError(f"HF upload unverified after {MAX_ATTEMPTS} attempts; artifacts retained: {last_error}") from error
+            delay = min(90, 4 * 2 ** (attempt - 1))
+            print(f"[HF Writer] {attempt}/{MAX_ATTEMPTS} failed: {error}; wait {delay}s")
+            time.sleep(delay)
+    for source in sources:
+        if source.resolve() != archive.resolve():
+            source.unlink()
+    archive.unlink()
+    return len(records)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     merge_and_upload()

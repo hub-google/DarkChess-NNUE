@@ -55,3 +55,7 @@ python -u src/training/external_arena.py --misty /path/to/misty-banqi/target/rel
 material／hybrid 可透過 candidate-mode 選擇，並使用不同 output 檔名。外部對戰不等於正式模型晉升。
 
 刪除定義後，歷史執行紀錄仍可能出現在 Actions 畫面；它們是舊紀錄，不代表仍有排程。此次保留歷史 log 和 artifact 供追溯。
+
+## 2026-10-24 五輪 15+1 HF 單寫入架構
+
+目前 `self_play.yml` 以五階段 reusable workflow `self_play_wave.yml` 運作，每階段 matrix 15 個 CPU Worker 約 50 分鐘，完成後產生獨立 GitHub Artifacts；該波唯一的 `hf-writer` Job (worker 16) 收集所有檔案、重播合法棋譜、去重、以內容雜湊命名唯一批次，單次提交 HF 私人 Dataset staging/worker_16 並下載核對雜湊。HF Writer 失敗時 Artifact 保留 14 天，可重新執行失敗上傳；前 15 個 CPU Worker 不持有 HF_TOKEN、也不對 HF 提交。五輪跑完結束此 RUN 再派送新 RUN；每小時 watchdog 僅偵測停頓，訓練保持每日排程與六小時事件門檻。

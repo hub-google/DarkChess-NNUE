@@ -445,8 +445,10 @@ def run_batch(
             print(f"[Self-Play] Skipping unfinished 512-ply game: {error}")
             continue
         output_path = output_dir / f"data_{int(time.time() * 1000)}_{game['id']}.jsonl.gz"
-        with gzip.open(output_path, "wt", encoding="utf-8") as handle:
+        partial = output_path.with_suffix(output_path.suffix + ".partial")
+        with gzip.open(partial, "wt", encoding="utf-8") as handle:
             handle.write(json.dumps(game, separators=(",", ":")) + "\n")
+        os.replace(partial, output_path)  # Export only fully written game files.
         print(f"[Self-Play] Saved game {index + 1}/{batch_size} to {output_path}.")
 
 

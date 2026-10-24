@@ -1,16 +1,14 @@
 name: Continuous self-play and recovery
 
-# One workflow owns the continuous CPU self-play loop, hourly recovery,
-# and monthly schedule keepalive.
+# Five sequential waves per RUN; each wave = 15 CPU workers + one HF writer.
 on:
   workflow_dispatch:
-    # Accept the input still sent by an already-running pre-migration round.
     inputs:
       continuous:
-        description: "Backward-compatible flag; all runs are continuous"
+        description: "Backward-compatible flag; full five-wave run"
         type: boolean
-        required: false
         default: true
+        required: false
   schedule:
     - cron: "23 * * * *"
     - cron: "43 3 1 * *"
@@ -18,144 +16,70 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/self_play.yml"
+      - ".github/workflows/self_play_wave.yml"
 
 permissions:
   contents: write
   actions: write
 
-# The watchdog must run while a long self-play round is still active.
 concurrency:
   group: self-play-${{ github.event_name == 'workflow_dispatch' && 'round' || 'watchdog' }}
   cancel-in-progress: false
 
 jobs:
-  self-play-worker:
+  wave1:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    # GitHub-hosted jobs have a six-hour maximum. Cap the entire job at
-    # 5h55m and reserve >=15 minutes for checkout, Python/PyTorch installation,
-    # upload retries and artifact cleanup after the 5h40m generation window.
-    timeout-minutes: 355
-    strategy:
-      fail-fast: false
-      matrix:
-        # Fixed four-worker nonstop self-play.
-        worker_id: [1, 2, 3, 4]
+    uses: ./.github/workflows/self_play_wave.yml
+    with:
+      wave: 1
+    secrets: inherit
 
-    steps:
-      - uses: actions/checkout@v4
+  wave2:
+    needs: wave1
+    uses: ./.github/workflows/self_play_wave.yml
+    with:
+      wave: 2
+    secrets: inherit
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: pip
+  wave3:
+    needs: wave2
+    uses: ./.github/workflows/self_play_wave.yml
+    with:
+      wave: 3
+    secrets: inherit
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
+  wave4:
+    needs: wave3
+    uses: ./.github/workflows/self_play_wave.yml
+    with:
+      wave: 4
+    secrets: inherit
 
-      - name: Generate and upload self-play
-        env:
-          WORKER_ID: ${{ matrix.worker_id }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          BATCH_SIZE: "10"
-          NUM_BATCHES: "1"
-          SELF_PLAY_TEMPERATURE: "0.8"
-          EXPLORE_PLIES: "20"
-          SEARCH_MAX_SECONDS: "3.0"
-          POLICY_PRIOR_MIX: "0.15"
-          OPENING_SEARCH_DEPTH: "1"
-          SEARCH_NODE_BUDGET_EARLY: "500"
-          SEARCH_NODE_BUDGET_MID: "1200"
-          SEARCH_NODE_BUDGET_LATE: "2500"
-          TORCH_NUM_THREADS: "1"
-          # Generate for 5h40m. GitHub jobs are limited to six
-          # hours including setup and uploads; don't waste CPU restarting hourly.
-          GENERATION_WINDOW_SECONDS: "20400"
-          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
-        run: |
-          mkdir -p output_data
-          export DATE_STR
-          DATE_STR=$(date +%Y%m%d)
-          
-          START_TIME=$(date +%s)
-          # 5h40m of generation per round. Persist completed games per
-          # batch; allow time for final HF uploads and worker teardown.
-          GENERATION_BUDGET="${GENERATION_WINDOW_SECONDS}"
-          UPLOADED_BATCHES=0
-          while true; do
-            CURRENT_TIME=$(date +%s)
-            ELAPSED=$((CURRENT_TIME - START_TIME))
-            REMAINING=$((GENERATION_BUDGET - ELAPSED))
-            if [ "$REMAINING" -le 120 ]; then
-              echo "Generation window exhausted after $ELAPSED seconds."
-              break
-            fi
-            
-            echo "Starting new batch. Elapsed: ${ELAPSED}s; remaining: ${REMAINING}s."
-            # Keep two minutes for uploading completed games and runner cleanup.
-            set +e
-            timeout --signal=TERM --kill-after=30s "$((REMAINING - 120))s" \
-              python -u src/workers/self_play.py
-            SELF_PLAY_STATUS=$?
-            set -e
-            if compgen -G "output_data/*.jsonl.gz" > /dev/null; then
-              python -u src/workers/upload_batch.py
-              UPLOADED_BATCHES=$((UPLOADED_BATCHES + 1))
-            elif [ "$SELF_PLAY_STATUS" -eq 124 ] && [ "$UPLOADED_BATCHES" -gt 0 ]; then
-              # Last in-progress game was killed at the time limit, but all
-              # previous complete batches are already safe in HF. Not a failure.
-              echo "[Self-Play] Clean time limit: earlier batches uploaded; no new completed game."
-              break
-            else
-              echo "::error::No complete replay in this batch (exit=$SELF_PLAY_STATUS)."
-              exit 1
-            fi
-
-            if [ "$SELF_PLAY_STATUS" -eq 124 ]; then
-              echo "Batch reached the generation deadline; uploaded completed games."
-              break
-            elif [ "$SELF_PLAY_STATUS" -ne 0 ]; then
-              echo "Self-play failed with exit code $SELF_PLAY_STATUS."
-              exit "$SELF_PLAY_STATUS"
-            fi
-          done
-          if [ "$UPLOADED_BATCHES" -eq 0 ]; then
-            echo "::error::No completed batches were uploaded in this worker's window."
-            exit 1
-          fi
-
-      - name: Preserve data if upload failed
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: self-play-recovery-${{ matrix.worker_id }}-${{ github.run_id }}
-          path: output_data/
-          if-no-files-found: ignore
-          retention-days: 7
+  wave5:
+    needs: wave4
+    uses: ./.github/workflows/self_play_wave.yml
+    with:
+      wave: 5
+    secrets: inherit
 
   continue-next-cycle:
-    needs: self-play-worker
-    if: ${{ always() && needs.self-play-worker.result == 'success' }}
+    needs: wave5
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.wave5.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Continue self-play immediately and train at most once per six hours
+      - name: Start next run then dispatch training if last train was over six hours ago
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Start the next self-play round before any optional training work.
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Autonomy] Next four-worker self-play round dispatched."
-
+          echo "[Autonomy] Dispatched next five-wave run."
           LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=1" --jq '.workflow_runs[0].created_at // ""')
           if [ -n "$LAST_TRAIN" ]; then
             AGE=$(( $(date -u +%s) - $(date -u -d "$LAST_TRAIN" +%s) ))
             if [ "$AGE" -ge 0 ] && [ "$AGE" -lt 21600 ]; then
-              echo "[Autonomy] Training dispatched ${AGE}s ago; no duplicate."
+              echo "[Autonomy] Training already dispatched ${AGE}s ago."
               exit 0
             fi
           fi
@@ -180,7 +104,7 @@ jobs:
             exit 0
           fi
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Watchdog] Restarted four-worker continuous self-play."
+          echo "[Watchdog] Restarted fifteen-worker continuous self-play."
 
       - name: Checkout for monthly keepalive
         if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
