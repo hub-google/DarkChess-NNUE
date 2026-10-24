@@ -33,6 +33,11 @@ def merge_and_upload():
                     game = json.loads(line)
                     validate_record(game)
                     game_id = game["id"]
+                    if not isinstance(game_id, str) or not game_id:
+                        raise ValueError("completed replay must have a nonempty string ID")
+                    timestamp = game.get("ts")
+                    if not isinstance(timestamp, int) or timestamp <= 0:
+                        raise ValueError("completed replay must have a positive integer timestamp")
                 except (ValueError, TypeError, KeyError, IndexError) as error:
                     raise RuntimeError(
                         f"Refusing invalid replay from {source}: {error}"
