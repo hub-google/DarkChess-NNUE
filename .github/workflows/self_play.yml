@@ -105,7 +105,7 @@ jobs:
 
   continue-next-cycle:
     needs: wave5
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.wave5.result == 'success' }}
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -142,6 +142,16 @@ jobs:
           ACTIVE_IDS=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed") | .id')
           for active_id in $ACTIVE_IDS; do
+            # Legacy four-worker runs consume four parallel slots and upload
+            # directly from each worker. Retire those runs now that the new
+            # single-writer architecture has started, preserving uploaded data.
+            LEGACY_JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.name | startswith("self-play-worker"))] | length')
+            if [ "$LEGACY_JOBS" -gt 0 ]; then
+              echo "[Watchdog] Cancelling retired four-worker run $active_id."
+              gh run cancel "$active_id" --repo "$GITHUB_REPOSITORY" || true
+              continue
+            fi
             META=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id" \
               --jq '[.created_at, .head_sha] | join(" ")')
             STARTED=${META%% *}
@@ -158,13 +168,8 @@ jobs:
               echo "[Watchdog] Recent dispatch $active_id is still starting."
               exit 0
             fi
-            LEGACY_JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$active_id/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name | startswith("self-play-worker"))] | length')
-            if [ "$LEGACY_JOBS" -eq 0 ]; then
-              echo "[Watchdog] Run $active_id may still be initializing; no duplicate."
-              exit 0
-            fi
-            echo "[Watchdog] Retired four-worker run $active_id does not block v2."
+            echo "[Watchdog] Run $active_id may still be initializing; no duplicate."
+            exit 0
           done
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
           echo "[Watchdog] Restarted fifteen-worker continuous self-play."
