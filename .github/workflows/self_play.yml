@@ -27,6 +27,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-workflow-contract:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Validate YAML syntax, five-wave wiring and HF upload safety
+        run: |
+          pip install PyYAML numpy numba huggingface_hub
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for name in ("self_play.yml", "self_play_wave.yml"):
+              path = Path(".github/workflows") / name
+              obj = yaml.safe_load(path.read_text())
+              assert isinstance(obj, dict) and "jobs" in obj
+              print("[Contract] Parsed", path)
+          PY
+          python -m unittest discover -s test -p "test_autonomous_loop.py" -v
+          python -m unittest discover -s test -p "test_upload_batch.py" -v
+
   wave1:
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/self_play_wave.yml
