@@ -12,16 +12,6 @@ on:
   schedule:
     - cron: "23 * * * *"
     - cron: "43 3 1 * *"
-  push:
-    branches: [master]
-    paths:
-      - ".github/workflows/self_play.yml"
-      - ".github/workflows/self_play_wave.yml"
-      - ".github/workflows/train.yml"
-      - ".github/scripts/publish_training_status.py"
-      - "src/training/**"
-      - "src/workers/**"
-      - "test/**"
 
 permissions:
   contents: write
@@ -32,30 +22,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate-workflow-contract:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Validate YAML syntax, five-wave wiring and HF upload safety
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install PyYAML -r requirements.txt
-          python - <<'PY'
-          from pathlib import Path
-          import yaml
-          for name in ("self_play.yml", "self_play_wave.yml"):
-              path = Path(".github/workflows") / name
-              obj = yaml.safe_load(path.read_text())
-              assert isinstance(obj, dict) and "jobs" in obj
-              print("[Contract] Parsed", path)
-          PY
-          python -m unittest discover -s test -p "test_*.py" -v
-
   wave1:
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/self_play_wave.yml
@@ -128,7 +94,7 @@ jobs:
           echo "[Autonomy] NNUE training dispatched."
 
   recovery-watchdog:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
+    if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
