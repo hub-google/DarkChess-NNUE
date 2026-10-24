@@ -1,61 +1,41 @@
-# GitHub Actions 盤點（2026-10-23）
+# GitHub Actions 稽核與端到端驗收（2026-10-24）
 
-清理前有 21 個有效 YAML workflow，另有不會執行的 `train.yml.bak`。清理後保留 9 個；移除 12 個有效 workflow 和舊備份。訓練、棋譜、模型及評估程式未刪除。保留現有 workflow 名稱，避免破壞 workflow_run 的名稱依賴。
+## 唯一的正式閉環
 
-## 保留的 9 個
+1. `self_play.yml`：每個 workflow_dispatch Run 執行五個依序接力的 Wave；每個 Wave 啟動 15 個 CPU 對弈 Worker。每小時 :23（UTC）的 watchdog 僅在沒有新版 Run 時恢復啟動，另有每月的 Actions 活躍度維護。
+2. `self_play_wave.yml`：可重用子流程；只讓 Worker 16 存取 `HF_TOKEN`。15 個 Worker 的完整棋譜透過 GitHub Artifacts 移交，Worker 16 驗證合法終局與唯一 ID、集中上傳私人 HF Dataset、重新下載比對 SHA-256。失敗保留 14 天的原始 Artifacts，並在同一 Job 再嘗試一次完整七次重試循環。
+3. `publish_training_status.yml`：排程／完成事件彙總 HF 的已整合與待整合棋譜，透過唯一棋局 ID 去重，更新網站統計並觸發 GitHub Pages；另以有序 HF writer 鎖補傳先前失敗的 Artifacts，成功後留下 HF receipts 避免重複補傳。
+4. `train.yml`：每日 03:41 UTC 定時訓練，也可由五波結束後的接力流程派送；對 HF staging 做快照、合併／驗證 Replay Buffer、設定最低 1000 局門檻、訓練 Challenger，通過成對 SPRT 才更新 Champion 及網站模型。普通 push 只執行完整 Python 回歸測試，不啟動耗時訓練。
+5. `deploy_pages.yml`：只有前端、模型相關變更或明確派送才建置／部署網頁。前端在載入模型時檢查二進位長度與 SHA-256。
 
-| 檔案 | 用途及觸發 | 保留原因 |
-| --- | --- | --- |
-| self_play.yml | 手動或上一輪接力；4 Worker 連續對弈，生成 5h40m 後立即接下一輪；手動重型模式 15 Worker | 正式資料生成 |
-| self_play_watchdog.yml | 每小時檢查，沒有活躍 self-play 才派送；可手動執行 | 失敗或漏接力時恢復；不會每小時重啟活躍工作 |
-| train_after_self_play.yml | self-play 成功完成後檢查，距前次 train 至少六小時才派送 | 事件驅動訓練橋接 |
-| train.yml | 每日 11:41 台灣時間及手動／橋接派送；合併私人 HF 棋譜、千局門檻、Value/Policy 訓練、SPRT、晉升、部署 | 正式訓練主流程與排程備援 |
-| publish_training_status.yml | self-play／train 完成、指定變更或手動；彙總 HF 公開統計，變更才提交並部署 | 網頁顯示訓練進度 |
-| deploy_pages.yml | frontend／models 變更或手動派送；測試、建置、發布 | 唯一網頁部署入口 |
-| monthly_activity.yml | 每月 1 日 11:43 台灣時間，建立空 commit | 防長期無儲存庫活動導致排程停用 |
-| ci.yml | master push、PR、手動；Python 測試；PR／手動加前端測試及建置 | 統一正確性測試；push 前端測試已在 Pages 執行 |
-| pipeline_smoke.yml | 訓練程式／測試變更或手動；小規模完整對弈、終局驗證、cache、Value/Policy 訓練、SPRT、匯出 | 單元測試之外的整合測試，不會晉升正式模型 |
+正式 workflow：以上 **5 份**。已刪除的歷史 workflow 仍可能保留在 GitHub Actions 的歷史清單中，但不代表仍在排程。
 
-## 已刪除的 12 個
+## HF 資料安全
 
-| 檔案 | 原本用途 | 刪除理由／替代方式 |
-| --- | --- | --- |
-| arena.yml | Champion 與 material baseline 成對對戰 | 研究工具，並非正式晉升流程；保留 arena.py，正式晉升仍由 train 的 SPRT 執行 |
-| benchmark.yml | CPU 搜尋效能測量及 artifact | 不需每次搜尋修改自動開一個 workflow；保留 benchmarks/search_benchmark.py |
-| external_arena.yml | 編譯固定版 MistyBanqi，測 Champion/material/hybrid 三種候選 | 研究對照，正式訓練無依賴；保留外部引擎轉接器、測試與評估程式，可按需本地執行 |
-| frontend_search_ci.yml | 前端測試與建置 | 與 Pages 重複；PR／手動測試移入 ci.yml |
-| self_play_trial.yml | 兩局真實對弈與終局驗證 | pipeline_smoke 已涵蓋真實棋局、Policy 對弈；補上一般棋局嚴格終局驗證 |
-| autonomous_loop_acceptance.yml | 全部 Python 測試、HF 連線、千局門檻與正式 train 派送 | 一次性驗收；契約測試仍由 CI 跑，HF 實際讀寫在正式流程執行；避免改 workflow 又派送正式訓練 |
-| release_acceptance.yml | Python／前端／真實棋局測試後派送 Pages 及兩個 smoke | 一次性驗收與重複派送，已由 CI、pipeline_smoke、Pages 覆蓋 |
-| hf_bootstrap.yml | 恢復缺失 HF dataset，產一局、上傳並回讀 | 舊恢復用途，dataset 已存在；hf_bootstrap.py 保留供修復使用 |
-| hf_diagnostics.yml | HF token／dataset 唯讀診斷 | 臨時排查入口；hf_diagnostics.py 保留 |
-| hf_production_trial.yml | 產一局，上傳 HF staging 後下載驗證 | 一次性 HF 整合驗收，正式 self-play／train 已執行上傳和下載 |
-| reset_replay_data.yml | 確認字串後清空 HF 舊棋規 replay 與 staging | 舊棋規遷移工具，常態訓練不需要；刪除 workflow 不會刪除任何 HF 資料 |
-| run_full_production_once.yml | 跑全部測試後派送一次 15 Worker | 一次性啟動包裝；直接手動 self_play.yml 即可 |
+- 新批次：`staging/worker_16/YYYYMMDD/batch_<timestamp>_<digest>.jsonl.gz`
+- 彙整後：`replay_buffer.jsonl.gz`
+- 補傳成功憑證：`receipts/recovery/<run_id>/<wave>.json`
+- 任何 HF 網路／驗證失敗都不得刪除尚未核實的原始 Artifact。
+- 一個 Run 五輪中若某 Worker 失敗，其餘輪次仍繼續；但沒有任何成功的 HF Writer 時不得無限制高速接力。
+- GitHub Token 推送不一定啟動其他推送式 Actions：正式晉升和統計更新要明確派送 `deploy_pages.yml`。
+- 不應從前端直接存取 HF 私人 Dataset 或公開 HF Token。
 
-另刪除 `train.yml.bak`：舊 TypeScript 流程且跳過正式 SPRT，不會被 Actions 執行；舊版仍可由 Git 歷史取得。
+## 2026-10-24 已實際完成的驗收
 
-## 按需研究及診斷
+- 自動啟動新版 15 個獨立 Worker，第一輪 15/15 成功。
+- Worker 16 從全部 GitHub Artifacts 彙整 421 局完整合法棋譜，上傳約 8.4 MB 到 HF，再下載驗證成功。執行 Run：`40077451349`。
+- 第一輪結束後自動啟動第二輪的 Worker。
+- 訓練 Run `40078183067`：Python 測試、HF Replay Buffer 合併、回讀、最低局數檢查、NNUE Challenger 訓練已通過，SPRT 實際執行中。
+- 模型晉升及五輪完成、下一個 Run 接力，只能在各自執行結束後判定，不可將單元測試當成生產成功。
 
-先安裝 requirements.txt。以下程式保留，無需獨立 workflow：
+## 實際排查順序
 
-```bash
-python -u benchmarks/search_benchmark.py
-python -u src/training/arena.py --candidate models/champion.nnue --baseline material --pairs 2 --depth 3 --node-budget 250 --max-seconds 0.15 --output arena_results.json
-python -u src/training/hf_diagnostics.py
-```
+1. GitHub Actions 的 `Continuous self-play and recovery`：檢查五波各 15 Worker，以及每波唯一 `worker 16 HF writer` Job 中的 `[HF Writer] VERIFIED` 行。
+2. HF 私有 Dataset 的 `staging/worker_16/` 與 `replay_buffer.jsonl.gz`：確認新增棋局、去重及備份。
+3. `Train and promote NNUE`：確認值網路訓練成功、SPRT 通過才執行 `Promote validated challenger`。未通過就保留現有 Champion，不偽稱進化。
+4. `Publish training status`：確認 `recover-failed-hf`（需要時）與 `publish`；出現錯誤時保留原始 Artifact 以便下個排程補傳。
+5. `deploy_pages.yml`：檢查前端測試、建置與部署結果，再於公開網站核對模型版本及局數。
 
-HF 診斷需現有 HF_TOKEN。外部對戰請先 clone https://github.com/brianhliou/misty-banqi 並 checkout `9f7fbe849f5d4a2b3358b1b18a31a2cf1bfdcc5c`，再執行：
+GitHub Actions: https://github.com/hub-google/DarkChess-NNUE/actions
 
-```bash
-cargo build --release -p banqi-engine --manifest-path /path/to/misty-banqi/Cargo.toml
-python -u src/training/external_arena.py --misty /path/to/misty-banqi/target/release/banqi-engine --champion models/champion.nnue --pairs 20 --node-budget 400 --max-seconds 0.15 --candidate-mode champion --output external_arena_champion.json
-```
-
-material／hybrid 可透過 candidate-mode 選擇，並使用不同 output 檔名。外部對戰不等於正式模型晉升。
-
-刪除定義後，歷史執行紀錄仍可能出現在 Actions 畫面；它們是舊紀錄，不代表仍有排程。此次保留歷史 log 和 artifact 供追溯。
-
-## 2026-10-24 五輪 15+1 HF 單寫入架構
-
-目前 `self_play.yml` 以五階段 reusable workflow `self_play_wave.yml` 運作，每階段 matrix 15 個 CPU Worker 約 50 分鐘，完成後產生獨立 GitHub Artifacts；該波唯一的 `hf-writer` Job (worker 16) 收集所有檔案、重播合法棋譜、去重、以內容雜湊命名唯一批次，單次提交 HF 私人 Dataset staging/worker_16 並下載核對雜湊。HF Writer 失敗時 Artifact 保留 14 天，可重新執行失敗上傳；前 15 個 CPU Worker 不持有 HF_TOKEN、也不對 HF 提交。五輪跑完結束此 RUN 再派送新 RUN；每小時 watchdog 僅偵測停頓，訓練保持每日排程與六小時事件門檻。
+網站: https://hub-google.github.io/DarkChess-NNUE/
