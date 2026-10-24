@@ -29,9 +29,14 @@ def merge_and_upload():
             for line in handle:
                 if not line.strip():
                     continue
-                game = json.loads(line)
-                validate_record(game)
-                game_id = game["id"]
+                try:
+                    game = json.loads(line)
+                    validate_record(game)
+                    game_id = game["id"]
+                except (ValueError, TypeError, KeyError, IndexError) as error:
+                    raise RuntimeError(
+                        f"Refusing invalid replay from {source}: {error}"
+                    ) from error
                 serialized = json.dumps(game, sort_keys=True, separators=(",", ":"))
                 if game_id in records and records[game_id] != serialized:
                     raise RuntimeError(f"Conflicting replay records for {game_id}")
