@@ -14,7 +14,7 @@ import recover_failed_uploads as recovery
 def api_result(resource):
     if "/workflows/self_play.yml/runs?" in resource:
         return {"workflow_runs": [
-            {"id": 123, "status": "completed", "created_at": "2099-01-01T00:00:00Z"}
+            {"id": 123, "status": "completed", "conclusion": "failure", "created_at": "2099-01-01T00:00:00Z"}
         ]}
     if "/runs/123/artifacts?" in resource:
         return {"artifacts": [
