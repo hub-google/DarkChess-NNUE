@@ -10,11 +10,10 @@ on:
   push:
     branches: [master]
     paths:
-      - ".github/workflows/train.yml"
-      - "src/training/train.py"
-      - "src/training/symmetry_eval.py"
-      - "test/test_training_augmentation.py"
-      - "test/test_symmetry_eval.py"
+      - ".github/workflows/*.yml"
+      - ".github/scripts/**"
+      - "src/**"
+      - "test/**"
 
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
@@ -23,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  symmetry-unit-tests:
+  python-regression:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -33,12 +32,12 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-      - name: Install test dependencies
+      - name: Install all Python production/test dependencies
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install numpy numba
-      - name: Validate symmetry group, legal moves, policy masks and model audit
-        run: python -m unittest test.test_training_augmentation test.test_symmetry_eval -v
+          pip install -r requirements.txt
+      - name: Validate self-play, replay recovery, training and search
+        run: python -m unittest discover -s test -p "test_*.py" -v
 
   train-and-promote:
     if: github.event_name != 'push'
