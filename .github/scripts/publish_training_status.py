@@ -14,9 +14,17 @@ from huggingface_hub.errors import EntryNotFoundError
 REPO_ID = "hub-google/DarkChess-NNUE-Data"
 
 
-def count_lines(path: str) -> int:
+def replay_ids(path: str) -> set[str]:
+    """Return immutable replay IDs so staged retries are not double-counted."""
+    ids = set()
     with gzip.open(path, "rt", encoding="utf-8") as stream:
-        return sum(1 for line in stream if line.strip())
+        for line in stream:
+            if line.strip():
+                game_id = json.loads(line)["id"]
+                if not isinstance(game_id, str) or not game_id:
+                    raise ValueError(f"Invalid replay ID in {path}")
+                ids.add(game_id)
+    return ids
 
 
 def main() -> None:
@@ -37,8 +45,8 @@ def main() -> None:
     except EntryNotFoundError:
         staged = []
         print("[Training Status] No staging batches yet.")
-    replay_games = 0
-    staging_games = 0
+    consolidated_ids: set[str] = set()
+    pending_ids: set[str] = set()
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
             local = hf_hub_download(
@@ -46,7 +54,7 @@ def main() -> None:
                 filename="replay_buffer.jsonl.gz", token=token,
                 local_dir=temp_dir,
             )
-            replay_games = count_lines(local)
+            consolidated_ids = replay_ids(local)
         except EntryNotFoundError:
             print("[Training Status] No consolidated replay buffer yet.")
 
@@ -55,16 +63,19 @@ def main() -> None:
                 repo_id=REPO_ID, repo_type="dataset",
                 filename=name, token=token, local_dir=temp_dir,
             )
-            return count_lines(local)
+            return replay_ids(local)
 
         with ThreadPoolExecutor(max_workers=6) as pool:
-            staging_games = sum(pool.map(read_batch, staged))
+            for batch_ids in pool.map(read_batch, staged):
+                pending_ids.update(batch_ids)
         print(f"[Training Status] Counted {len(staged)} staging files.")
 
+    # A verified replay buffer may temporarily coexist with staging sources
+    # while their deletion is retried. Those replays count exactly once.
     summary = {
-        "replayGames": replay_games,
-        "stagingGames": staging_games,
-        "totalGames": replay_games + staging_games,
+        "replayGames": len(consolidated_ids),
+        "stagingGames": len(pending_ids - consolidated_ids),
+        "totalGames": len(consolidated_ids | pending_ids),
         "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     output = Path("frontend/public/training-status.json")
