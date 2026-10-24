@@ -52,7 +52,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         code = self.read("self_play.yml")
         self.assertIn("continue-next-cycle:", code)
         self.assertIn("needs: wave5", code)
-        self.assertIn("needs.wave5.result == 'success'", code)
+        self.assertIn("always() && !cancelled()", code)
         self.assertIn("gh workflow run train.yml", code)
         self.assertIn("LAST_TRAIN=", code)
         self.assertIn("21600", code)
@@ -66,6 +66,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         code = self.read("self_play.yml")
         self.assertIn("group: self-play-v2-", code)
         self.assertIn('contains(" / Wave ")', code)
+        self.assertIn('gh run cancel "$active_id"', code)
         for i in range(2, 6):
             block = code.split(f"  wave{i}:")[1].split("    uses:")[0]
             self.assertIn("always()", block)
