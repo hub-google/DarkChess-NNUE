@@ -36,7 +36,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertEqual(code.count("merge-multiple: true"), 5)
         self.assertEqual(code.count("name: Wave "), 10)
         for wave in range(1, 6):
-            writer = code.split(f"  wave{wave}-upload:")[1].split("\n  ", 1)[0]
+            writer = code.split(f"  wave{wave}-upload:")[1].split("\n  wave", 1)[0]
             self.assertIn("HF", writer)
         self.assertIn("group: darkchess-hf-stage-writer", code)
         self.assertEqual(code.count('WORKER_ID: "16"'), 5)
