@@ -18,7 +18,7 @@ on:
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
   # deletes only the cutoff-bounded snapshot that it successfully verifies.
-  group: nnue-training-${{ github.event_name == 'push' && 'symmetry-ci' || 'production' }}
+  group: nnue-training-${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'symmetry-ci' || 'production' }}
   cancel-in-progress: false
 
 jobs:
@@ -40,7 +40,9 @@ jobs:
         run: python -m unittest discover -s test -p "test_*.py" -v
 
   train-and-promote:
-    if: github.event_name != 'push'
+    # An explicit [train-now] commit opts into one production training run.
+    # Ordinary source pushes execute only regression CI.
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[train-now]')
     runs-on: ubuntu-latest
     timeout-minutes: 345
     permissions:
