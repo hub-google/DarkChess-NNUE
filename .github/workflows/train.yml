@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
   # Code-only CI; do not launch expensive self-play/training on pushes.
   push:
-    branches: [master]
+    branches: [master, refactor/shared-banqi-engine-quality-20261025]
     paths:
       - ".github/workflows/*.yml"
       - ".github/scripts/**"
@@ -48,6 +48,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/prune_action_runs.py --scope all
+
+      - name: Set up Node 22 for shared engine acceptance
+        if: github.ref_name == 'refactor/shared-banqi-engine-quality-20261025'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Test common browser and Node engine, and cross-language replay rules
+        if: github.ref_name == 'refactor/shared-banqi-engine-quality-20261025'
+        timeout-minutes: 12
+        run: |
+          cd frontend
+          npm ci
+          npm test -- --run
+          npm run build
+          cd ..
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+          BATCH_SIZE=1 NUM_BATCHES=1 SEARCH_MAX_SECONDS=1.2 \
+            SEARCH_NODE_BUDGET_EARLY=5000 SEARCH_NODE_BUDGET_MID=10000 SEARCH_NODE_BUDGET_LATE=16000 \
+            MIN_AVG_COMPLETED_DEPTH=1.0 timeout 480s node .shared-build/src/workers/self_play_shared.js
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
 
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
