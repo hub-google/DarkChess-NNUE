@@ -18,8 +18,8 @@ function CapturedPieces({ game }: { game: Board }) {
   </section>
 }
 
-export function Sidebar({ game, human, thinking, model, modelError, onReset }: {
-  game: Board; human: Color; thinking: boolean; model: BrowserNNUE | null; modelError: boolean; onReset: () => void
+export function Sidebar({ game, human, thinking, model, modelError, lastSearch, onReset }: {
+  game: Board; human: Color; thinking: boolean; model: BrowserNNUE | null; modelError: boolean; lastSearch: {depth: number; nodes: number; elapsedMs: number} | null; onReset: () => void
 }) {
   const engine = model ? `NNUE v2 · ${model.version}` : modelError ? '規則搜尋（模型載入失敗）' : '正在載入 NNUE 模型…'
   return <aside className="panel">
@@ -32,7 +32,8 @@ export function Sidebar({ game, human, thinking, model, modelError, onReset }: {
       <div><small>對手</small><strong>Nightly AI</strong></div>
     </div>
     <div className="model-card">
-      <span className="pulse" /><div><small>目前引擎</small><strong>{thinking ? `${engine} · 搜尋中` : engine}</strong></div>
+      <span className="pulse" /><div><small>目前引擎</small><strong>{thinking ? `${engine} · 搜尋中` : engine}</strong>
+      {lastSearch && <small>上一手實際搜尋：深度 {lastSearch.depth} 層 · {lastSearch.nodes.toLocaleString()} 節點 · {(lastSearch.elapsedMs / 1000).toFixed(2)} 秒</small>}</div>
     </div>
     <TrainingStatus />
     <CapturedPieces game={game} />

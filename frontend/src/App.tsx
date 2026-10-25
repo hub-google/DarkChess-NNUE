@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { BoardView } from './components/Board'
 import { Sidebar } from './components/Sidebar'
 import { Board, Color, colorOf, Piece } from './engine/board'
-import { chooseSearchedMove } from './engine/search'
+import { DarkChessEngine } from './engine/search'
 import { BrowserNNUE, loadChampion } from './engine/nnue'
 import './App.css'
 
@@ -12,6 +12,7 @@ function App() {
   const [thinking, setThinking] = useState(false)
   const [model, setModel] = useState<BrowserNNUE | null>(null)
   const [modelError, setModelError] = useState(false)
+  const [lastSearch, setLastSearch] = useState<{depth: number; nodes: number; elapsedMs: number} | null>(null)
   const gameRef = useRef(game)
   const searchWorkerRef = useRef<Worker | null>(null)
   const searchSerialRef = useRef(0)
@@ -36,7 +37,7 @@ function App() {
     searchWorkerRef.current?.terminate()
     searchWorkerRef.current = newSearchWorker()
     const next = new Board(); gameRef.current = next; setGame(next)
-    setHuman(Color.NONE); setThinking(false)
+    setHuman(Color.NONE); setThinking(false); setLastSearch(null)
   }
 
   const clickSquare = (index: number) => {
@@ -67,12 +68,14 @@ function App() {
     const id = ++searchSerialRef.current
     if (!worker) {
       const current = gameRef.current
-      const move = chooseSearchedMove(current, model ? state => model.evaluate(state) : undefined)
-      if (move) current.play(move)
+      const analysis = new DarkChessEngine(model ? state => model.evaluate(state) : undefined)
+        .analyze(current, {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
+      if (analysis.move) current.play(analysis.move)
+      setLastSearch(analysis)
       setThinking(false); refresh()
       return
     }
-    const onReply = (event: MessageEvent<{id: number; move?: {from: number; to: number; flip?: boolean}; error?: string}>) => {
+    const onReply = (event: MessageEvent<{id: number; move?: {from: number; to: number; flip?: boolean}; error?: string; depth?: number; nodes?: number; elapsedMs?: number}>) => {
       if (cancelled || event.data.id !== id) return
       worker.removeEventListener('message', onReply)
       const current = gameRef.current
@@ -80,8 +83,13 @@ function App() {
       let move = event.data.move
       if (!move || event.data.error) {
         // Same search core as the worker, with a bounded emergency budget.
-        move = chooseSearchedMove(current, model ? state => model.evaluate(state) : undefined,
-          {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
+        const fallback = new DarkChessEngine(model ? state => model.evaluate(state) : undefined)
+          .analyze(current, {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
+        move = fallback.move
+        setLastSearch(fallback)
+      } else {
+        setLastSearch({depth: event.data.depth ?? 0, nodes: event.data.nodes ?? 0,
+          elapsedMs: event.data.elapsedMs ?? 0})
       }
       if (move) current.play(move)
       setThinking(false)
@@ -101,7 +109,7 @@ function App() {
         <span className="build-badge"><i /> AI 對弈公開測試</span>
       </header>
       <section className="game-layout">
-        <Sidebar game={game} human={human} thinking={thinking} model={model} modelError={modelError} onReset={reset} />
+        <Sidebar game={game} human={human} thinking={thinking} model={model} modelError={modelError} lastSearch={lastSearch} onReset={reset} />
         <BoardView game={game} human={human} thinking={thinking} onSquare={clickSquare} />
       </section>
       <footer>台灣暗棋 · 公開自我對弈研究計畫</footer>
