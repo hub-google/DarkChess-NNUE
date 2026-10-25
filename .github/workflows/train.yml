@@ -14,7 +14,7 @@ on:
       - ".github/workflows/*.yml"
       - ".github/scripts/**"
       - "src/**"
-      - "frontend/src/engine/**"
+      - "frontend/src/**"
       - "test/**"
 
 concurrency:
@@ -59,7 +59,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Test common browser and Node engine, and cross-language replay rules
         if: github.ref_name == 'refactor/shared-banqi-engine-quality-20261025'
-        timeout-minutes: 12
+        timeout-minutes: 15
         run: |
           cd frontend
           npm ci
@@ -67,10 +67,10 @@ jobs:
           npm run build
           cd ..
           ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-          BATCH_SIZE=1 NUM_BATCHES=1 SEARCH_MAX_SECONDS=1.2 \
+          BATCH_SIZE=2 NUM_BATCHES=1 SEARCH_MAX_SECONDS=1.2 \
             SEARCH_NODE_BUDGET_EARLY=5000 SEARCH_NODE_BUDGET_MID=10000 SEARCH_NODE_BUDGET_LATE=16000 \
-            MIN_AVG_COMPLETED_DEPTH=1.0 timeout 480s node .shared-build/src/workers/self_play_shared.js
-          python -u src/training/validate_replay.py --directory output_data --min-games 1
+            MIN_AVG_COMPLETED_DEPTH=2.0 timeout 720s node .shared-build/src/workers/self_play_shared.js
+          python -u src/training/validate_replay.py --directory output_data --min-games 2
 
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
