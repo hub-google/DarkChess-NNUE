@@ -96,7 +96,12 @@ def train(cache_dir, champion, challenger, epochs=1, max_samples=100000, batch_s
                 if "policy_actions" not in shard or "policy_probs" not in shard or "legal_action_bits" not in shard:
                     print(f"[Policy] Skipping legacy cache without legal masks: {path}")
                     continue
+                # NPZ field lookups decompress a whole array. Never repeat per
+                # sample inside the inner loop; cache the arrays once per shard.
+                features_array = shard["features"]
+                action_array = shard["policy_actions"]
                 probs = shard["policy_probs"]
+                legal_array = shard["legal_action_bits"]
                 order = np.flatnonzero(probs.sum(axis=1) > 0)
                 rng.shuffle(order)
                 for offset in range(0, len(order), batch_size):
@@ -108,16 +113,16 @@ def train(cache_dir, champion, challenger, epochs=1, max_samples=100000, batch_s
                     weights = []
                     legal_masks = []
                     for index in subset:
-                        feat = shard["features"][index].astype(np.float32)
+                        feat = features_array[index].astype(np.float32)
                         symmetry = int(rng.integers(0, 4))
                         color_swap = bool(rng.integers(0, 2))
                         transformed, _ = augment_features(
                             feat, 0.0, transform=symmetry, color_swap=color_swap
                         )
                         x.append(transformed)
-                        actions.append(transform_actions(shard["policy_actions"][index], symmetry))
-                        weights.append(shard["policy_probs"][index].astype(np.float32))
-                        legal_masks.append(transform_legal_mask(shard["legal_action_bits"][index], symmetry))
+                        actions.append(transform_actions(action_array[index], symmetry))
+                        weights.append(probs[index].astype(np.float32))
+                        legal_masks.append(transform_legal_mask(legal_array[index], symmetry))
                     if not x:
                         continue
                     optimizer.zero_grad()

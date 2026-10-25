@@ -1,19 +1,15 @@
 /** Self-play using EXACTLY the same DarkChessEngine class as the browser.
- * This is an opt-in migration candidate; the production Action remains on
- * Python until replay parity, legality, throughput and strength pass CI.
+ * Production, arena and browser use this identical decision core. Replay
+ * legality is checked independently using the Python referee.
  */
-import { createHash, randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
-import { Board, Color, Piece, type Move } from '../../frontend/src/engine/board'
+import { Board, Color, type Move } from '../../frontend/src/engine/board'
 import { DarkChessEngine, type SearchAnalysis, type SearchLimits } from '../../frontend/src/engine/search'
-import { BrowserNNUE, type TensorInfo } from '../../frontend/src/engine/nnue-core'
+import { loadNNUE } from './model_runtime'
 
-type Manifest = {
-  format: number; inputSize: number; bytes: number; sha256: string
-  tensors: Record<string, TensorInfo>
-}
 type Replay = {
   id: string; ts: number; ver: string; model: string; hid: number[]
   mov: number[]; q: number[]; v: number[]; qd: number[]
@@ -28,34 +24,6 @@ const num = (key: string, defaultValue: number) => {
 }
 const encode = (move: Move) => move.from * 32 + move.to
 const nHidden = (board: Board) => board.remainingCounts.reduce((a, b) => a + b, 0)
-
-function loadNNUE(): { model: BrowserNNUE; version: string } {
-  const base = process.env.MODEL_DIR || 'frontend/public/models'
-  const manifest = JSON.parse(readFileSync(join(base, 'champion.json'), 'utf8')) as Manifest
-  const bytes = readFileSync(join(base, 'champion.bin'))
-  const digest = createHash('sha256').update(bytes).digest('hex')
-  if (manifest.format !== 1 || manifest.inputSize !== 498 ||
-      bytes.length !== manifest.bytes || digest !== manifest.sha256) {
-    throw new Error('The shared NNUE model is missing, stale or corrupted')
-  }
-  const tensor = (name: string): Float32Array => {
-    const info = manifest.tensors[name]
-    if (!info || info.offset < 0 || info.length < 0 ||
-        info.offset + info.length * 4 > bytes.byteLength) {
-      throw new Error(`Invalid NNUE tensor: ${name}`)
-    }
-    const copy = bytes.subarray(info.offset, info.offset + info.length * 4)
-    const raw = new ArrayBuffer(copy.byteLength)
-    new Uint8Array(raw).set(copy)
-    return new Float32Array(raw)
-  }
-  const model = new BrowserNNUE(
-    digest.slice(0, 12), tensor('fc1.weight'), tensor('fc1.bias'),
-    tensor('fc2.weight'), tensor('fc2.bias'),
-    tensor('fc3.weight'), tensor('fc3.bias'),
-  )
-  return { model, version: `nnue-${digest.slice(0, 12)}` }
-}
 
 function limits(board: Board): SearchLimits {
   const hidden = nHidden(board)
@@ -162,7 +130,8 @@ function main() {
   for (let i = 0; i < count; i++) {
     try {
       const game = play(engine, version)
-      const pass = game.fallback === 0 && game.depthAverage >= num('MIN_AVG_COMPLETED_DEPTH', 1.1)
+      const pass = game.fallback === 0 && game.depthAverage >= num('MIN_AVG_COMPLETED_DEPTH', 2.5) &&
+        game.lateDepthAverage >= num('MIN_LATE_COMPLETED_DEPTH', 2.5)
       console.log(`[Shared Engine] Game ${i + 1}: ply=${game.replay.ply} result=${game.replay.res} ` +
         `seconds=${game.seconds.toFixed(1)} nodes=${game.totalNodes} ` +
         `avg_completed_depth=${game.depthAverage.toFixed(2)} late_avg_depth=${game.lateDepthAverage.toFixed(2)} ` +
