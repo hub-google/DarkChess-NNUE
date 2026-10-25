@@ -219,23 +219,6 @@ export class Board {
   }
 }
 
-const material = [1200, 240, 120, 60, 30, 70, 15]
-
 export type Evaluator = (board: Board) => number
-
-export function chooseAiMove(board: Board, evaluate?: Evaluator): Move | undefined {
-  const moves = board.legalMoves()
-  const tactical = moves.filter(move => !move.flip)
-  if (tactical.length) {
-    const scored = tactical.map(move => {
-      const captured = board.grid[move.to]
-      const next = board.clone(); next.play(move)
-      const modelScore = evaluate ? evaluate(next) * 1000 * (board.turn === Color.RED ? 1 : -1) : 0
-      const captureScore = captured === Piece.EMPTY ? 0 : material[typeOf(captured)]
-      return { move, score: modelScore + captureScore + Math.random() * 0.01 }
-    })
-    return scored.sort((a, b) => b.score - a.score)[0].move
-  }
-  const flips = moves.filter(move => move.flip)
-  return flips[Math.floor(Math.random() * flips.length)]
-}
+// All AI decisions are made through frontend/src/engine/search.ts:DarkChessEngine.
+// No second heuristic-only board AI is maintained here.

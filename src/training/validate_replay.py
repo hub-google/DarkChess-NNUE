@@ -14,13 +14,16 @@ def validate_record(record):
     moves = record["mov"]
     if not moves or not isinstance(moves, list):
         raise ValueError("missing moves")
-    for field in ("q", "v", "qd", "pi"):
+    for field in ("q", "v", "qd", "pi", "qn", "qt"):
         if field in record and len(record[field]) != len(moves):
             raise ValueError(f"{field} length does not match moves")
     board = DarkChessBoardPy(bag=record["hid"])
     for ply, move in enumerate(moves):
         if "qd" in record and int(record["qd"][ply]) < 0:
             raise ValueError("negative completed search depth")
+        for field in ("qn", "qt"):
+            if field in record and float(record[field][ply]) < 0:
+                raise ValueError(f"{field} contains negative search measurement")
         for field in ("q", "v"):
             if field in record and not -1.0 <= float(record[field][ply]) <= 1.0:
                 raise ValueError(f"{field} outside [-1,1]")

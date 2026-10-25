@@ -13,7 +13,7 @@ import { loadNNUE } from './model_runtime'
 type Replay = {
   id: string; ts: number; ver: string; model: string; hid: number[]
   mov: number[]; q: number[]; v: number[]; qd: number[]
-  pi: [number, number][][]; res: number; ply: number
+  pi: [number, number][][]; qn: number[]; qt: number[]; res: number; ply: number; draw_reason?: string
   red_model?: string; black_model?: string
 }
 const VERSION = 'v2.1.0-perpetual-chase'
@@ -73,7 +73,7 @@ function select(analysis: SearchAnalysis, side: Color, ply: number): Move {
 
 function play(engine: DarkChessEngine, version: string): {
   replay: Replay; seconds: number; totalNodes: number; depthAverage: number;
-  fallback: number; earlyCount: number; lateDepthAverage: number
+  fallback: number; earlyCount: number; lateDepthAverage: number; lateCount: number
 } {
   const board = new Board()
   const id = randomUUID()
@@ -81,7 +81,7 @@ function play(engine: DarkChessEngine, version: string): {
   const record: Replay = {
     id, ts: Date.now(), ver: VERSION, model: version,
     hid: board.hidden.map(x => Number(x) - 1),
-    mov: [], q: [], v: [], qd: [], pi: [], res: 0, ply: 0,
+    mov: [], q: [], v: [], qd: [], pi: [], qn: [], qt: [], res: 0, ply: 0,
     red_model: version, black_model: version,
   }
   let nodes = 0, completedDepth = 0, fallbacks = 0, searched = 0
@@ -98,6 +98,8 @@ function play(engine: DarkChessEngine, version: string): {
     record.q.push(rawValue)
     record.v.push(staticValue)
     record.qd.push(analysis.depth)
+    record.qn.push(analysis.nodes)
+    record.qt.push(Math.round(analysis.elapsedMs))
     record.pi.push(side === Color.NONE ? [] : rankedPolicy(analysis, side))
     if (!board.play(chosen)) throw new Error(`Illegal move in shared engine: ${encode(chosen)}`)
     nodes += analysis.nodes
@@ -112,11 +114,12 @@ function play(engine: DarkChessEngine, version: string): {
   if (!board.isOver) throw new Error('Unfinished self-play game at 512 plies: no fabricated draw')
   record.ply = record.mov.length
   record.res = board.draw ? 0 : board.winner === Color.RED ? 1 : -1
+  if (board.draw) record.draw_reason = board.halfMoveClock >= 60 ? 'sixty_no_progress' : 'other'
   const depthAverage = completedDepth / Math.max(1, searched)
   const lateDepthAverage = lateDepth / Math.max(1, lateCount)
   return { replay: record, seconds: (performance.now() - started) / 1000,
     totalNodes: nodes, depthAverage, fallback: fallbacks,
-    earlyCount, lateDepthAverage }
+    earlyCount, lateDepthAverage, lateCount }
 }
 
 function main() {
@@ -131,7 +134,7 @@ function main() {
     try {
       const game = play(engine, version)
       const pass = game.fallback === 0 && game.depthAverage >= num('MIN_AVG_COMPLETED_DEPTH', 2.5) &&
-        game.lateDepthAverage >= num('MIN_LATE_COMPLETED_DEPTH', 2.5)
+        (game.lateCount === 0 || game.lateDepthAverage >= num('MIN_LATE_COMPLETED_DEPTH', 2.5))
       console.log(`[Shared Engine] Game ${i + 1}: ply=${game.replay.ply} result=${game.replay.res} ` +
         `seconds=${game.seconds.toFixed(1)} nodes=${game.totalNodes} ` +
         `avg_completed_depth=${game.depthAverage.toFixed(2)} late_avg_depth=${game.lateDepthAverage.toFixed(2)} ` +
