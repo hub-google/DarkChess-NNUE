@@ -13,6 +13,15 @@ function App() {
   const [model, setModel] = useState<BrowserNNUE | null>(null)
   const [modelError, setModelError] = useState(false)
   const gameRef = useRef(game)
+  const searchWorkerRef = useRef<Worker | null>(null)
+  const searchSerialRef = useRef(0)
+
+  const newSearchWorker = () => new Worker(new URL('./engine/search.worker.ts', import.meta.url), {type: 'module'})
+
+  useEffect(() => {
+    searchWorkerRef.current = newSearchWorker()
+    return () => { searchWorkerRef.current?.terminate(); searchWorkerRef.current = null }
+  }, [])
 
   useEffect(() => { gameRef.current = game }, [game])
   useEffect(() => {
@@ -23,6 +32,9 @@ function App() {
 
   const refresh = useCallback(() => setGame(gameRef.current.clone()), [])
   const reset = () => {
+    searchSerialRef.current++
+    searchWorkerRef.current?.terminate()
+    searchWorkerRef.current = newSearchWorker()
     const next = new Board(); gameRef.current = next; setGame(next)
     setHuman(Color.NONE); setThinking(false)
   }
@@ -51,15 +63,35 @@ function App() {
     if (human === Color.NONE || game.isOver || game.turn === human) return
     let cancelled = false
     setThinking(true)
-    const timer = window.setTimeout(() => {
-      if (cancelled) return
+    const worker = searchWorkerRef.current
+    const id = ++searchSerialRef.current
+    if (!worker) {
       const current = gameRef.current
-      const move = chooseSearchedMove(current, model ? board => model.evaluate(board) : undefined)
+      const move = chooseSearchedMove(current, model ? state => model.evaluate(state) : undefined)
+      if (move) current.play(move)
+      setThinking(false); refresh()
+      return
+    }
+    const onReply = (event: MessageEvent<{id: number; move?: {from: number; to: number; flip?: boolean}; error?: string}>) => {
+      if (cancelled || event.data.id !== id) return
+      worker.removeEventListener('message', onReply)
+      const current = gameRef.current
+      if (current.isOver || current.turn === human) return
+      let move = event.data.move
+      if (!move || event.data.error) {
+        // Same search core as the worker, with a bounded emergency budget.
+        move = chooseSearchedMove(current, model ? state => model.evaluate(state) : undefined,
+          {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
+      }
       if (move) current.play(move)
       setThinking(false)
       refresh()
-    }, 80)
-    return () => { cancelled = true; window.clearTimeout(timer) }
+    }
+    worker.addEventListener('message', onReply)
+    worker.postMessage({id, board: gameRef.current, limits: {
+      maxDepth: 12, nodeBudget: 25000, maxMs: 2500,
+    }})
+    return () => { cancelled = true; worker.removeEventListener('message', onReply) }
   }, [game, human, model, refresh])
 
   return (
