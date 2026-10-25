@@ -7,7 +7,7 @@
 */
 import { Board, Color, Piece, type Move, type Evaluator, colorOf } from './board'
 
-const MATERIAL = [12, 7, 6, 5, 4, 5, 2]
+export const MATERIAL = [12, 7, 6, 5, 4, 5, 2]
 const isFlip = (move: Move) => move.flip === true || move.from === move.to
 const fromMaterial = (board: Board): number => {
   let signed = 0
@@ -40,16 +40,32 @@ export type SearchLimits = {
   maxMs?: number
 }
 
-export function chooseSearchedMove(
-  board: Board, nnue?: Evaluator, limits: SearchLimits = {},
-): Move | undefined {
+export type SearchAnalysis = {
+  move: Move | undefined
+  depth: number
+  nodes: number
+  elapsedMs: number
+  rootValues: Record<number, number>
+  value: number
+}
+
+/** The ONE decision engine used by browser games and Node.js self-play. */
+export class DarkChessEngine {
+  constructor(private readonly evaluator?: Evaluator) {}
+
+  evaluate(board: Board): number {
+    return this.evaluator ? this.evaluator(board) : fromMaterial(board)
+  }
+
+  analyze(board: Board, limits: SearchLimits = {}): SearchAnalysis {
   const available = board.legalMoves()
-  if (!available.length) return undefined
-  if (board.turn === Color.NONE) return available[0]
+  if (!available.length) return { move: undefined, depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0 }
+  if (board.turn === Color.NONE) return { move: available[0], depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0 }
   const maxDepth = Math.max(1, Math.floor(limits.maxDepth ?? 3))
   const nodeBudget = Math.max(1, Math.floor(limits.nodeBudget ?? 2500))
   const maxMs = Math.max(1, limits.maxMs ?? 150)
-  const deadline = performance.now() + maxMs
+  const startedAt = performance.now()
+  const deadline = startedAt + maxMs
   let nodes = 0
   const evalPosition = (state: Board) => {
     if (state.draw) return 0
@@ -58,7 +74,7 @@ export function chooseSearchedMove(
     const hidden = state.grid.filter(p => p === Piece.HIDDEN).length
     // A large early chance tree is more efficiently scored by cheap material;
     // reserve expensive browser NNUE forwards for later revealed positions.
-    return nnue && hidden < 12 ? nnue(state) : fromMaterial(state)
+    return this.evaluator ? this.evaluator(state) : fromMaterial(state)
   }
   const tick = () => {
     nodes += 1
@@ -115,6 +131,8 @@ export function chooseSearchedMove(
     }
     return value
   }
+  let completedDepth = 0
+  let rootValues: Record<number, number> = {}
   // Deterministic fallback is public-state only and takes no chance samples.
   // It remains legal if even a depth-one search cannot complete in time.
   let best = ordered(board, available)[0]
@@ -124,8 +142,10 @@ export function chooseSearchedMove(
     try {
       let candidate = best
       let value = board.turn === Color.RED ? -Infinity : Infinity
+      const values: Record<number, number> = {}
       for (const move of root) {
         const score = branch(board, move, depth, -Infinity, Infinity)
+        values[moveKey(move)] = score
         if ((board.turn === Color.RED && score > value) ||
             (board.turn === Color.BLACK && score < value)) {
           value = score
@@ -133,10 +153,17 @@ export function chooseSearchedMove(
         }
       }
       best = candidate // commit only a completely finished iteration
+      rootValues = values
+      completedDepth = depth
     } catch (error) {
       if (error instanceof BudgetExceeded) break
       throw error
     }
   }
-  return best
+  return { move: best, depth: completedDepth, nodes, elapsedMs: performance.now() - startedAt, rootValues, value: rootValues[moveKey(best)] ?? evalPosition(board) }
+  }
+}
+
+export function chooseSearchedMove(board: Board, nnue?: Evaluator, limits: SearchLimits = {}): Move | undefined {
+  return new DarkChessEngine(nnue).analyze(board, limits).move
 }
