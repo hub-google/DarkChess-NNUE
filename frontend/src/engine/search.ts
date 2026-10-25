@@ -60,12 +60,37 @@ export class DarkChessEngine {
   analyze(board: Board, limits: SearchLimits = {}): SearchAnalysis {
   const available = board.legalMoves()
   if (!available.length) return { move: undefined, depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0 }
-  if (board.turn === Color.NONE) return { move: available[0], depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0 }
   const maxDepth = Math.max(1, Math.floor(limits.maxDepth ?? 3))
   const nodeBudget = Math.max(1, Math.floor(limits.nodeBudget ?? 2500))
   const maxMs = Math.max(1, limits.maxMs ?? 150)
   const startedAt = performance.now()
   const deadline = startedAt + maxMs
+  if (board.turn === Color.NONE) {
+    // First revealer is assigned the color of the actual revealed piece.
+    // Optimize expected utility *for that color*, using public bag counts.
+    // The hidden referee arrangement must never be consulted.
+    const total = board.remainingCounts.reduce((a, b) => a + b, 0)
+    const values: Record<number, number> = {}
+    let bestMove = available[0], bestScore = -Infinity, nodes = 0
+    for (const move of available) {
+      if (nodes >= nodeBudget || performance.now() >= deadline) break
+      let expected = 0
+      for (let p = 0; p < 14; p++) {
+        const count = board.remainingCounts[p]
+        if (!count) continue
+        const child = board.clone()
+        child.hidden[move.from] = (p + 1) as Piece
+        if (!child.play(move)) throw new Error('illegal speculative opening flip')
+        const owner = colorOf((p + 1) as Piece)
+        expected += count / total * (owner === Color.RED ? this.evaluate(child) : -this.evaluate(child))
+        nodes++
+      }
+      values[moveKey(move)] = expected
+      if (expected > bestScore) { bestScore = expected; bestMove = move }
+    }
+    return { move: bestMove, depth: 1, nodes, elapsedMs: performance.now() - startedAt,
+      rootValues: values, value: Number.isFinite(bestScore) ? bestScore : 0 }
+  }
   let nodes = 0
   const evalPosition = (state: Board) => {
     if (state.draw) return 0
