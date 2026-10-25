@@ -21,7 +21,8 @@ concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
   # deletes only the cutoff-bounded snapshot that it successfully verifies.
   group: nnue-training-${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'symmetry-ci' || 'production' }}
-  cancel-in-progress: false
+  # CI always tests newest source; never interrupt long-running real training.
+  cancel-in-progress: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') }}
 
 jobs:
   python-regression:
