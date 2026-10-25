@@ -1,0 +1,31 @@
+{
+  "seed": 20260923,
+  "positions": [
+    {
+      "name": "early",
+      "hidden": 24,
+      "max_depth": 3,
+      "node_budget": 12000
+    },
+    {
+      "name": "mid",
+      "hidden": 12,
+      "max_depth": 10,
+      "node_budget": 50000
+    },
+    {
+      "name": "late",
+      "hidden": 0,
+      "max_depth": 12,
+      "node_budget": 120000
+    }
+  ],
+  "throughput_game": {
+    "opening_depth": 1,
+    "node_budgets": {
+      "early": 500,
+      "mid": 1000,
+      "late": 2000
+    }
+  }
+}

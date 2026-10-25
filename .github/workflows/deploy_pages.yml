@@ -1,0 +1,77 @@
+name: 暗棋網站部署
+run-name: 暗棋網站部署
+
+# 觸發條件：master 分支上有 frontend/、models/ 或此 workflow 檔案變更時觸發
+# Deploy on relevant source changes and retain manual deployment support.
+on:
+  push:
+    branches: ["master"]
+    paths:
+      - 'frontend/**'
+      - 'models/**'
+      - '.github/workflows/deploy_pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  # A newer deployment replaces stale builds; manual Cancel ends this run.
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 網站測試與建置
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下載目前的專案程式碼
+        uses: actions/checkout@v4
+
+      - name: 清理已完成的舊執行紀錄
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+
+      - name: 準備網站建置環境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+          
+      - name: 安裝網站所需套件
+        working-directory: ./frontend
+        run: npm ci
+        
+      - name: 執行網站單元測試
+        working-directory: ./frontend
+        run: npm run test -- --run
+        
+      - name: 編譯靜態網站
+        working-directory: ./frontend
+        run: npm run build
+        
+      - name: 設定網站託管環境
+        uses: actions/configure-pages@v4
+        
+      - name: 上傳網站建置成果
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './frontend/dist'
+
+  deploy:
+    name: 發布暗棋網站
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: 發布暗棋網站
+        id: deployment
+        uses: actions/deploy-pages@v4

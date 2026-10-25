@@ -1,0 +1,336 @@
+name: 模型訓練與升級
+run-name: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && '引擎品質檢查' || '模型訓練與升級' }}
+
+# Independent daily training is resilient to incomplete worker matrices.
+# Manual production runs may additionally trigger through workflow_run.
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+  # Code-only CI; do not launch expensive self-play/training on pushes.
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/*.yml"
+      - ".github/scripts/**"
+      - "src/**"
+      - "frontend/src/**"
+      - "test/**"
+
+concurrency:
+  # Serialize training runs, but do not block self-play uploads. Consolidation
+  # deletes only the cutoff-bounded snapshot that it successfully verifies.
+  group: nnue-training-${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'symmetry-ci' || 'production' }}
+  # CI always tests newest source; never interrupt long-running real training.
+  cancel-in-progress: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') }}
+
+jobs:
+  python-regression:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: 安裝訓練與測試套件
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: 驗證對弈、搜尋、棋譜與訓練
+        run: python -m unittest discover -s test -p "test_*.py" -v
+      - name: 清理已完成的舊執行紀錄
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+
+      - name: 準備共用引擎測試環境
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 測試網頁與運算端的共用引擎
+        timeout-minutes: 15
+        run: |
+          cd frontend
+          npm ci
+          npm test -- --run
+          npm run build
+          cd ..
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+          BATCH_SIZE=1 NUM_BATCHES=1 SELF_PLAY_SMOKE_DEPTH=2 timeout 480s node .shared-build/src/workers/self_play_shared.js
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
+          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 2 --depth 2 --node-budget 350 --max-seconds 0.025 --output /tmp/shared_sprt_smoke.json
+          python - <<'PY'
+          import json
+          report = json.load(open("/tmp/shared_sprt_smoke.json"))
+          assert report["games_played"] == 4
+          assert 0 <= report["score_rate"] <= 1
+          assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
+          PY
+  train-and-promote:
+    # An explicit [train-now] commit opts into one production training run.
+    # Ordinary source pushes execute only regression CI.
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[train-now]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: 安裝訓練所需套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: 執行程式回歸測試
+        run: python -m unittest discover -s test -p "test_*.py" -v
+
+      - name: 確定本次訓練資料範圍
+        shell: bash
+        run: |
+          NOW_EPOCH=$(date -u +%s)
+          # Both scheduled and manually dispatched training snapshot all
+          # uploads already finished when the job starts. Concurrent uploads
+          # with later timestamps are left untouched for the next cycle.
+          CUTOFF_EPOCH=$NOW_EPOCH
+          echo "CONSOLIDATION_CUTOFF_EPOCH=$CUTOFF_EPOCH" >> "$GITHUB_ENV"
+          echo "Snapshot cutoff: $(date -u -d "@$CUTOFF_EPOCH" --iso-8601=seconds)"
+
+      - name: 整併並驗證棋譜資料
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/training/consolidate_buffer.py
+
+      - name: 下載私人棋譜資料
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          mkdir -p datasets
+          python - <<'PY'
+          import os
+          import shutil
+          from huggingface_hub import hf_hub_download
+          token = os.environ["HF_TOKEN"]
+          if not token:
+              raise RuntimeError("HF_TOKEN missing: private replay is unreadable")
+          path = hf_hub_download(
+              repo_id="hub-google/DarkChess-NNUE-Data",
+              repo_type="dataset",
+              filename="replay_buffer.jsonl.gz",
+              token=token,
+          )
+          shutil.copy(path, "datasets/replay_buffer.jsonl.gz")
+          print("[Training] Downloaded authenticated private replay snapshot.")
+          PY
+
+      - name: 確認有效棋譜數量門檻
+        id: enough_games
+        env:
+          MIN_TRAINING_GAMES: "1000"
+        run: |
+          python -u src/training/replay_gate.py \
+            --replay datasets/replay_buffer.jsonl.gz \
+            --minimum "$MIN_TRAINING_GAMES" \
+            --github-output "$GITHUB_OUTPUT"
+
+
+      - name: 建立訓練快取並重算關鍵局面
+        if: steps.enough_games.outputs.ready == 'true'
+        env:
+          MAX_POSITIONS_PER_GAME: "4"
+          MAX_TRAINING_SAMPLES: "2000000"
+          TRAINING_CACHE_SHARD_SIZE: "50000"
+          REANALYSIS_CANDIDATES: "4096"
+          REANALYSIS_MAX_POSITIONS: "64"
+          REANALYSIS_DEPTH: "10"
+          REANALYSIS_NODE_BUDGET: "50000"
+          REANALYSIS_MAX_SECONDS: "4.0"
+          TORCH_NUM_THREADS: "1"
+        run: python -u src/training/build_training_cache.py
+
+      - name: 檢查訓練資料是否足夠
+        if: steps.enough_games.outputs.ready == 'true'
+        env:
+          MIN_TRAINING_GAMES: "1000"
+        run: |
+          python -u src/training/validate_training_readiness.py \
+            --manifest training_cache/manifest.json \
+            --min-games "$MIN_TRAINING_GAMES"
+
+      - name: 訓練新一代候選模型
+        if: steps.enough_games.outputs.ready == 'true'
+        env:
+          BATCH_SIZE: "1024"
+          TRAINING_EPOCHS: "3"
+          LEARNING_RATE: "0.0001"
+          MAX_POSITIONS_PER_GAME: "4"
+          MAX_TRAINING_SAMPLES: "2000000"
+          TRAINING_CACHE_DIR: "training_cache"
+          SYMMETRY_AUGMENTATION: "true"
+          COLOR_SWAP_AUGMENTATION: "true"
+          SYMMETRY_CONSISTENCY_WEIGHT: "0.02"
+          SYMMETRY_CONSISTENCY_EVERY: "4"
+        run: python -u src/training/train.py
+
+      - name: 檢查新舊模型的對稱性
+        if: steps.enough_games.outputs.ready == 'true'
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          python -u src/training/symmetry_eval.py \
+            --cache-dir training_cache \
+            --model models/champion.nnue \
+            --model models/challenger.nnue \
+            --samples 256 \
+            --output symmetry_report.json
+
+      - name: 準備共用引擎模型驗證環境
+        if: steps.enough_games.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 匯出新舊模型的共用評估權重
+        if: steps.enough_games.outputs.ready == 'true'
+        run: |
+          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
+          python -u src/training/export_nnue.py --input models/challenger.nnue --output-dir validation_models/challenger
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 以相同搜尋引擎驗證新舊模型棋力
+        if: steps.enough_games.outputs.ready == 'true'
+        id: validate
+        timeout-minutes: 130
+        run: |
+          node .shared-build/src/workers/sprt_shared.js \
+            --champion validation_models/champion \
+            --challenger validation_models/challenger \
+            --pairs 200 \
+            --depth 6 \
+            --node-budget 1200 \
+            --max-seconds 0.10 \
+            --elo0 -20 \
+            --elo1 20 \
+            --output sprt_results.json
+
+      - name: 訓練輔助走法預測模型
+        if: steps.validate.outputs.passed == 'true'
+        continue-on-error: true
+        env:
+          TORCH_NUM_THREADS: "1"
+        run: |
+          timeout --signal=TERM --kill-after=15s 600s python -u src/training/policy_train.py \
+            --cache-dir training_cache \
+            --champion models/champion.policy \
+            --challenger models/challenger.policy \
+            --epochs 1 \
+            --max-samples 4096
+
+      - name: 保存模型驗證與訓練紀錄
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-training-${{ github.run_id }}
+          path: |
+            training_cache/manifest.json
+            sprt_results.json
+            symmetry_report.json
+            models/challenger.nnue
+            models/challenger.policy
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 升級通過驗證的新模型
+        if: steps.validate.outputs.passed == 'true'
+        run: |
+          # Keep only the active champion in the repository. Do not
+          # accumulate older weight snapshots in models/archive.
+          mv models/challenger.nnue models/champion.nnue
+          if [ -f models/challenger.policy ]; then
+            mv models/challenger.policy models/champion.policy
+          fi
+
+          python src/training/export_nnue.py \
+            --input models/champion.nnue \
+            --output-dir frontend/public/models
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/champion.nnue frontend/public/models/
+          if [ -f models/champion.policy ]; then git add models/champion.policy; fi
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: promote validated NNUE champion"
+            # Training may have modified other tracked files (e.g. old
+            # challenger checkpoints) that are intentionally not committed.
+            # Keep the validated champion commit, discard only scratch
+            # working-tree mutations so git rebase can run successfully.
+            git status --short
+            git reset --hard HEAD
+            # The public training-status workflow may update master while a
+            # several-hour CPU training is running. Rebase that unrelated
+            # commit rather than losing a legitimate SPRT promotion.
+            # Conflicting model changes abort instead of overwriting them.
+            PUSHED=false
+            for attempt in 1 2 3; do
+              git fetch origin master
+              if ! git rebase origin/master; then
+                git rebase --abort || true
+                echo "::error::Champion changed concurrently; refusing stale promotion."
+                exit 1
+              fi
+              if git push origin HEAD:master; then
+                PUSHED=true
+                break
+              fi
+            done
+            if [ "$PUSHED" != "true" ]; then
+              echo "::error::Could not publish validated champion after three attempts."
+              exit 1
+            fi
+          fi
+
+      - name: 模型真正升級後才更新網站
+        if: steps.validate.outputs.passed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "Promoted champion: requested GitHub Pages redeployment."
+
+      - name: 未通過驗證則保留舊模型
+        if: steps.enough_games.outputs.ready == 'true' && steps.validate.outputs.passed != 'true'
+        run: echo "Challenger did not pass paired SPRT; existing champion is retained."
+
+      - name: 資料不足時繼續累積棋譜
+        if: steps.enough_games.outputs.ready != 'true'
+        run: |
+          echo "[Training] Need at least 1000 complete games before training."
+          echo "[Training] No false failure, no false champion promotion."
+          echo "[Training] Next scheduled self-play will keep accumulating data."
+
+      - name: 清理已完成的舊執行紀錄
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+

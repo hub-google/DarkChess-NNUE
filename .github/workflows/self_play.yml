@@ -1,0 +1,1136 @@
+name: 自動對弈與中斷接續
+run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' || github.event.schedule == '23 * * * *' && '每小時恢復檢查' || github.event.schedule == '17 */3 * * *' && '棋譜修復與統計' || github.event.schedule == '43 3 1 * *' && '每月排程維護' || '自動對弈系統' }}
+
+# Exactly three visible active workflows; ALL games use shared DarkChessEngine:
+# 1. This file: five-wave self-play + HF recovery + public counters
+# 2. train.yml: training, tests and promotion
+# 3. deploy_pages.yml: GitHub Pages publishing
+# Cancellation: ALWAYS guard downstream work with !cancelled().
+# The scheduler must not restart after the most recent round was cancelled.
+on:
+  workflow_dispatch:
+    inputs:
+      continuous:
+        description: "連續五輪，每輪十五個對弈運算員與一個棋譜上傳員"
+        type: boolean
+        default: true
+        required: false
+  schedule:
+    - cron: "23 * * * *"      # hourly recovery watchdog
+    - cron: "17 */3 * * *"    # HF recovery + public counters
+    - cron: "43 3 1 * *"      # monthly Actions keepalive
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: self-play-v3-${{ github.event_name == 'workflow_dispatch' && 'round' || 'maintenance' }}
+  cancel-in-progress: false
+
+jobs:
+  wave1-workers:
+    name: 第1輪／對弈運算員 ${{ matrix.worker_id }}
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝共用決策引擎與棋譜驗證工具
+        run: |
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 接續前輪尚未完成的深度搜尋
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKER_ID: ${{ matrix.worker_id }}
+          WAVE: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p resume_state
+          find resume_state -type f -name 'worker_*.json' -delete
+          if [ "$WAVE" -gt 1 ]; then
+            PREVIOUS_WAVE=$((WAVE - 1))
+            ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${GITHUB_RUN_ID}"
+            if gh run download "$GITHUB_RUN_ID" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY"; then
+              cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null || true
+              cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+            fi
+          else
+            # Within the same user-approved continuous chain, continue the most
+            # recent prior round. Workers never write HF; artifacts hold only
+            # public-safe search progress and referee state for recovery.
+            for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=12" --jq ".workflow_runs[].id"); do
+              [ "$RUN" = "$GITHUB_RUN_ID" ] && continue
+              FOUND=0
+              for PREVIOUS_WAVE in 5 4 3 2 1; do
+                ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${RUN}"
+                if gh run download "$RUN" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null && FOUND=1 || true
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+                  break
+                fi
+              done
+              if [ "$FOUND" -eq 1 ]; then break; fi
+            done
+          fi
+          if [ -f "resume_state/worker_${WORKER_ID}.json" ]; then
+            echo "[Resume] Found persisted deep-search checkpoint for worker $WORKER_ID"
+          else
+            echo "[Resume] No checkpoint found; starting a new referee deal"
+          fi
+      - name: 使用共用引擎產生高品質棋譜
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          RESUME_STATE_DIR: "resume_state"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=20400
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          # Quality is non-negotiable: checkpoint-only workers are valid but
+          # upload only terminal full-depth games, never partial records.
+          python -u src/training/validate_replay.py --directory output_data --min-games 0
+      - name: 保存完整棋譜與搜尋進度
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-1-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: |
+            output_data/*.jsonl.gz
+            resume_state/*.json
+            resume_state/*.memo
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave1-upload:
+    name: 第1輪／第16號棋譜上傳員
+    outputs:
+      uploaded: ${{ steps.upload.outputs.uploaded }}
+    needs: wave1-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝棋譜驗證及雲端上傳工具
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-1-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: 驗證並集中上傳完整棋譜
+        id: upload
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "1"
+        run: |
+          set -euo pipefail
+          # Checkpoint-only waves are not model training data.
+          if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
+            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 1 uploaded and verified."
+              echo "uploaded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: 雲端上傳失敗時保留原始資料
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-1-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave2-workers:
+    name: 第2輪／對弈運算員 ${{ matrix.worker_id }}
+    needs: wave1-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝共用決策引擎與棋譜驗證工具
+        run: |
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 接續前輪尚未完成的深度搜尋
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKER_ID: ${{ matrix.worker_id }}
+          WAVE: "2"
+        run: |
+          set -euo pipefail
+          mkdir -p resume_state
+          find resume_state -type f -name 'worker_*.json' -delete
+          if [ "$WAVE" -gt 1 ]; then
+            PREVIOUS_WAVE=$((WAVE - 1))
+            ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${GITHUB_RUN_ID}"
+            if gh run download "$GITHUB_RUN_ID" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY"; then
+              cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null || true
+              cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+            fi
+          else
+            # Within the same user-approved continuous chain, continue the most
+            # recent prior round. Workers never write HF; artifacts hold only
+            # public-safe search progress and referee state for recovery.
+            for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=12" --jq ".workflow_runs[].id"); do
+              [ "$RUN" = "$GITHUB_RUN_ID" ] && continue
+              FOUND=0
+              for PREVIOUS_WAVE in 5 4 3 2 1; do
+                ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${RUN}"
+                if gh run download "$RUN" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null && FOUND=1 || true
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+                  break
+                fi
+              done
+              if [ "$FOUND" -eq 1 ]; then break; fi
+            done
+          fi
+          if [ -f "resume_state/worker_${WORKER_ID}.json" ]; then
+            echo "[Resume] Found persisted deep-search checkpoint for worker $WORKER_ID"
+          else
+            echo "[Resume] No checkpoint found; starting a new referee deal"
+          fi
+      - name: 使用共用引擎產生高品質棋譜
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          RESUME_STATE_DIR: "resume_state"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=20400
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          # Quality is non-negotiable: checkpoint-only workers are valid but
+          # upload only terminal full-depth games, never partial records.
+          python -u src/training/validate_replay.py --directory output_data --min-games 0
+      - name: 保存完整棋譜與搜尋進度
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-2-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: |
+            output_data/*.jsonl.gz
+            resume_state/*.json
+            resume_state/*.memo
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave2-upload:
+    name: 第2輪／第16號棋譜上傳員
+    outputs:
+      uploaded: ${{ steps.upload.outputs.uploaded }}
+    needs: wave2-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝棋譜驗證及雲端上傳工具
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-2-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: 驗證並集中上傳完整棋譜
+        id: upload
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "2"
+        run: |
+          set -euo pipefail
+          # Checkpoint-only waves are not model training data.
+          if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
+            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 2 uploaded and verified."
+              echo "uploaded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: 雲端上傳失敗時保留原始資料
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-2-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave3-workers:
+    name: 第3輪／對弈運算員 ${{ matrix.worker_id }}
+    needs: wave2-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝共用決策引擎與棋譜驗證工具
+        run: |
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 接續前輪尚未完成的深度搜尋
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKER_ID: ${{ matrix.worker_id }}
+          WAVE: "3"
+        run: |
+          set -euo pipefail
+          mkdir -p resume_state
+          find resume_state -type f -name 'worker_*.json' -delete
+          if [ "$WAVE" -gt 1 ]; then
+            PREVIOUS_WAVE=$((WAVE - 1))
+            ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${GITHUB_RUN_ID}"
+            if gh run download "$GITHUB_RUN_ID" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY"; then
+              cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null || true
+              cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+            fi
+          else
+            # Within the same user-approved continuous chain, continue the most
+            # recent prior round. Workers never write HF; artifacts hold only
+            # public-safe search progress and referee state for recovery.
+            for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=12" --jq ".workflow_runs[].id"); do
+              [ "$RUN" = "$GITHUB_RUN_ID" ] && continue
+              FOUND=0
+              for PREVIOUS_WAVE in 5 4 3 2 1; do
+                ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${RUN}"
+                if gh run download "$RUN" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null && FOUND=1 || true
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+                  break
+                fi
+              done
+              if [ "$FOUND" -eq 1 ]; then break; fi
+            done
+          fi
+          if [ -f "resume_state/worker_${WORKER_ID}.json" ]; then
+            echo "[Resume] Found persisted deep-search checkpoint for worker $WORKER_ID"
+          else
+            echo "[Resume] No checkpoint found; starting a new referee deal"
+          fi
+      - name: 使用共用引擎產生高品質棋譜
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          RESUME_STATE_DIR: "resume_state"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=20400
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          # Quality is non-negotiable: checkpoint-only workers are valid but
+          # upload only terminal full-depth games, never partial records.
+          python -u src/training/validate_replay.py --directory output_data --min-games 0
+      - name: 保存完整棋譜與搜尋進度
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-3-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: |
+            output_data/*.jsonl.gz
+            resume_state/*.json
+            resume_state/*.memo
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave3-upload:
+    name: 第3輪／第16號棋譜上傳員
+    outputs:
+      uploaded: ${{ steps.upload.outputs.uploaded }}
+    needs: wave3-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝棋譜驗證及雲端上傳工具
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-3-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: 驗證並集中上傳完整棋譜
+        id: upload
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "3"
+        run: |
+          set -euo pipefail
+          # Checkpoint-only waves are not model training data.
+          if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
+            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 3 uploaded and verified."
+              echo "uploaded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: 雲端上傳失敗時保留原始資料
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-3-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave4-workers:
+    name: 第4輪／對弈運算員 ${{ matrix.worker_id }}
+    needs: wave3-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝共用決策引擎與棋譜驗證工具
+        run: |
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 接續前輪尚未完成的深度搜尋
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKER_ID: ${{ matrix.worker_id }}
+          WAVE: "4"
+        run: |
+          set -euo pipefail
+          mkdir -p resume_state
+          find resume_state -type f -name 'worker_*.json' -delete
+          if [ "$WAVE" -gt 1 ]; then
+            PREVIOUS_WAVE=$((WAVE - 1))
+            ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${GITHUB_RUN_ID}"
+            if gh run download "$GITHUB_RUN_ID" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY"; then
+              cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null || true
+              cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+            fi
+          else
+            # Within the same user-approved continuous chain, continue the most
+            # recent prior round. Workers never write HF; artifacts hold only
+            # public-safe search progress and referee state for recovery.
+            for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=12" --jq ".workflow_runs[].id"); do
+              [ "$RUN" = "$GITHUB_RUN_ID" ] && continue
+              FOUND=0
+              for PREVIOUS_WAVE in 5 4 3 2 1; do
+                ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${RUN}"
+                if gh run download "$RUN" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null && FOUND=1 || true
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+                  break
+                fi
+              done
+              if [ "$FOUND" -eq 1 ]; then break; fi
+            done
+          fi
+          if [ -f "resume_state/worker_${WORKER_ID}.json" ]; then
+            echo "[Resume] Found persisted deep-search checkpoint for worker $WORKER_ID"
+          else
+            echo "[Resume] No checkpoint found; starting a new referee deal"
+          fi
+      - name: 使用共用引擎產生高品質棋譜
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          RESUME_STATE_DIR: "resume_state"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=20400
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          # Quality is non-negotiable: checkpoint-only workers are valid but
+          # upload only terminal full-depth games, never partial records.
+          python -u src/training/validate_replay.py --directory output_data --min-games 0
+      - name: 保存完整棋譜與搜尋進度
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-4-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: |
+            output_data/*.jsonl.gz
+            resume_state/*.json
+            resume_state/*.memo
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave4-upload:
+    name: 第4輪／第16號棋譜上傳員
+    outputs:
+      uploaded: ${{ steps.upload.outputs.uploaded }}
+    needs: wave4-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝棋譜驗證及雲端上傳工具
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-4-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: 驗證並集中上傳完整棋譜
+        id: upload
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "4"
+        run: |
+          set -euo pipefail
+          # Checkpoint-only waves are not model training data.
+          if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
+            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 4 uploaded and verified."
+              echo "uploaded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: 雲端上傳失敗時保留原始資料
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-4-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  wave5-workers:
+    name: 第5輪／對弈運算員 ${{ matrix.worker_id }}
+    needs: wave4-upload
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安裝共用決策引擎與棋譜驗證工具
+        run: |
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 接續前輪尚未完成的深度搜尋
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKER_ID: ${{ matrix.worker_id }}
+          WAVE: "5"
+        run: |
+          set -euo pipefail
+          mkdir -p resume_state
+          find resume_state -type f -name 'worker_*.json' -delete
+          if [ "$WAVE" -gt 1 ]; then
+            PREVIOUS_WAVE=$((WAVE - 1))
+            ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${GITHUB_RUN_ID}"
+            if gh run download "$GITHUB_RUN_ID" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY"; then
+              cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null || true
+              cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+            fi
+          else
+            # Within the same user-approved continuous chain, continue the most
+            # recent prior round. Workers never write HF; artifacts hold only
+            # public-safe search progress and referee state for recovery.
+            for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=12" --jq ".workflow_runs[].id"); do
+              [ "$RUN" = "$GITHUB_RUN_ID" ] && continue
+              FOUND=0
+              for PREVIOUS_WAVE in 5 4 3 2 1; do
+                ARTIFACT="selfplay-wave-${PREVIOUS_WAVE}-worker-${WORKER_ID}-${RUN}"
+                if gh run download "$RUN" -n "$ARTIFACT" -D prior_state --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.json" "resume_state/worker_${WORKER_ID}.json" 2>/dev/null && FOUND=1 || true
+                  cp "prior_state/resume_state/worker_${WORKER_ID}.memo" "resume_state/worker_${WORKER_ID}.memo" 2>/dev/null || true
+                  break
+                fi
+              done
+              if [ "$FOUND" -eq 1 ]; then break; fi
+            done
+          fi
+          if [ -f "resume_state/worker_${WORKER_ID}.json" ]; then
+            echo "[Resume] Found persisted deep-search checkpoint for worker $WORKER_ID"
+          else
+            echo "[Resume] No checkpoint found; starting a new referee deal"
+          fi
+      - name: 使用共用引擎產生高品質棋譜
+        shell: bash
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+          BATCH_SIZE: "10"
+          RESUME_STATE_DIR: "resume_state"
+          NUM_BATCHES: "1"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
+        run: |
+          set -euo pipefail
+          mkdir -p output_data
+          CHILD_PID=""
+          stop_child() {
+            trap - INT TERM
+            if [ -n "$CHILD_PID" ]; then
+              kill -TERM "$CHILD_PID" 2>/dev/null || true
+              wait "$CHILD_PID" 2>/dev/null || true
+            fi
+            exit 130
+          }
+          trap stop_child INT TERM
+          START=$(date +%s)
+          BUDGET=20400
+          while true; do
+            REMAINING=$(( BUDGET - $(date +%s) + START ))
+            if [ "$REMAINING" -le 180 ]; then break; fi
+            set +e
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
+            CHILD_PID=$!
+            wait "$CHILD_PID"
+            RESULT=$?
+            CHILD_PID=""
+            set -e
+            if [ "$RESULT" -eq 124 ]; then
+              echo "Time budget reached; completed games remain in artifacts."
+              break
+            fi
+            if [ "$RESULT" -ne 0 ]; then
+              echo "::error::CPU worker failed ($RESULT); completed games retained."
+              exit "$RESULT"
+            fi
+          done
+          # Quality is non-negotiable: checkpoint-only workers are valid but
+          # upload only terminal full-depth games, never partial records.
+          python -u src/training/validate_replay.py --directory output_data --min-games 0
+      - name: 保存完整棋譜與搜尋進度
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-wave-5-worker-${{ matrix.worker_id }}-${{ github.run_id }}
+          path: |
+            output_data/*.jsonl.gz
+            resume_state/*.json
+            resume_state/*.memo
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+  wave5-upload:
+    name: 第5輪／第16號棋譜上傳員
+    outputs:
+      uploaded: ${{ steps.upload.outputs.uploaded }}
+    needs: wave5-workers
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝棋譜驗證及雲端上傳工具
+        run: pip install numpy numba huggingface_hub
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: selfplay-wave-5-worker-*-${{ github.run_id }}
+          path: output_data
+          merge-multiple: true
+      - name: 驗證並集中上傳完整棋譜
+        id: upload
+        shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WORKER_ID: "16"
+          WAVE: "5"
+        run: |
+          set -euo pipefail
+          # Checkpoint-only waves are not model training data.
+          if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
+            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # One HF writer per wave; no CPU worker can write to HF.
+          for cycle in 1 2; do
+            if python -u src/workers/upload_batch.py; then
+              echo "[HF Writer] Wave 5 uploaded and verified."
+              echo "uploaded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$cycle" -lt 2 ]; then
+              echo "::warning::HF writer failed; retrying preserved artifacts."
+              sleep 30
+            fi
+          done
+          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          exit 1
+      - name: 雲端上傳失敗時保留原始資料
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hf-upload-recovery-wave-5-${{ github.run_id }}
+          path: output_data/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+  continue-next-cycle:
+    needs: [wave1-upload, wave2-upload, wave3-upload, wave4-upload, wave5-upload]
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: 清理已完成的舊執行紀錄
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+      - name: 確認上傳結果並接續下一輪
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPLOAD_STATUSES: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          VERIFIED_WRITERS=$(jq -n --argjson needs "$UPLOAD_STATUSES" \
+            '$needs | [.[] | select(.outputs.uploaded == "true")] | length')
+          if [ "$VERIFIED_WRITERS" -eq 0 ]; then
+            echo "[Autonomy] No completed depth-12 games this round; only checkpoints saved."
+          fi
+          # A cancelled round is never permitted to dispatch its successor.
+          CURRENT_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.status')
+          if [ "$CURRENT_STATUS" != "in_progress" ]; then
+            echo "::notice::Parent run not active ($CURRENT_STATUS); stop continuation."
+            exit 0
+          fi
+          echo "[Autonomy] $VERIFIED_WRITERS upload waves verified."
+          LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=40" \
+            --jq '[.workflow_runs[] | select(.event != "push")][0].created_at // ""')
+          if [ "$VERIFIED_WRITERS" -gt 0 ] && { [ -z "$LAST_TRAIN" ] || [ $(( $(date -u +%s) - $(date -u -d "$LAST_TRAIN" +%s) )) -ge 21600 ]; }; then
+            gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
+            echo "[Autonomy] Production NNUE training dispatched."
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Autonomy] Next five-wave round dispatched."
+
+  recovery-watchdog:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '23 * * * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: 清理已完成的舊執行紀錄
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+      - name: 僅恢復未被手動取消的對弈
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Manual cancellation means PAUSED, until the user dispatches a round.
+          # This persists without a separate repository variable or workflow.
+          RECENT=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=1")
+          LATEST_STATUS=$(jq -r '.workflow_runs[0].status // ""' <<< "$RECENT")
+          LATEST_RESULT=$(jq -r '.workflow_runs[0].conclusion // ""' <<< "$RECENT")
+          if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" = "cancelled" ]; then
+            echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
+            exit 0
+          fi
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "[Watchdog] $ACTIVE round(s) already active; no duplicate dispatch."
+            exit 0
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Watchdog] Started one new self-play round."
+
+  maintenance:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '17 */3 * * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝資料復原與統計工具
+        run: pip install numpy numba huggingface_hub
+      - name: 補傳先前上傳失敗的棋譜
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MAX_RECOVERY_GROUPS: "4"
+        run: python -u src/workers/recover_failed_uploads.py
+      - name: 僅清理已安全備份的完成紀錄
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+      - name: 統計已驗證且不重複的對弈局數
+        if: ${{ always() && !cancelled() }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u .github/scripts/publish_training_status.py
+      - name: 安全發布最新訓練狀態
+        if: ${{ always() && !cancelled() }}
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/public/training-status.json
+          if git diff --staged --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: publish verified self-play progress"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin master
+            if ! git rebase origin/master; then
+              git rebase --abort || true
+              echo "::error::Training status conflict; existing data preserved."
+              exit 1
+            fi
+            if git push origin HEAD:master; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$((attempt * 3))"
+          done
+          echo "::error::Could not push verified counters."
+          exit 1
+      - name: 統計更新時重新部署網站
+        if: ${{ !cancelled() && steps.publish.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+
+  monthly-keepalive:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+      - name: 每月維持自動排程運作
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git checkout -B master origin/master
+            git commit --allow-empty -m "chore: monthly Actions schedule keepalive"
+            if git push origin master; then exit 0; fi
+          done
+          exit 1

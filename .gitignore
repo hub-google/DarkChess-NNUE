@@ -1,0 +1,16 @@
+node_modules/
+.venv/
+__pycache__/
+*.jsonl.gz
+data/
+.env
+output_data/
+temp_consolidate/
+output_buffer/
+datasets/
+models/challenger.nnue
+models/challenger.policy
+.shared-build/
+resume_state/
+training_cache/
+validation_models/
