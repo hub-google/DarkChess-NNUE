@@ -1,4 +1,5 @@
 name: Continuous self-play and recovery
+run-name: ${{ github.event_name == 'workflow_dispatch' && 'DarkChess / Self-play' || github.event.schedule == '23 * * * *' && 'DarkChess / Watchdog' || github.event.schedule == '17 */3 * * *' && 'DarkChess / HF maintenance' || github.event.schedule == '43 3 1 * *' && 'DarkChess / Keepalive' || 'DarkChess / Self-play system' }}
 
 # Exactly three visible active workflows:
 # 1. This file: five-wave self-play + HF recovery + public counters
@@ -703,6 +704,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+      - name: Prune previous completed Actions history
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
       - name: Continue only after confirmed HF uploads and before cancellation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -735,6 +742,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Prune previous completed Actions history
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
       - name: Restart only after non-cancelled rounds
         env:
           GH_TOKEN: ${{ github.token }}
@@ -781,6 +796,13 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           MAX_RECOVERY_GROUPS: "4"
         run: python -u src/workers/recover_failed_uploads.py
+      - name: Prune only completed runs with verified HF game backups
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/prune_action_runs.py --scope all
       - name: Count unique verified self-play games
         if: ${{ always() && !cancelled() }}
         env:

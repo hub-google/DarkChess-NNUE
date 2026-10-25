@@ -1,6 +1,6 @@
 """Recover durable failed self-play artifacts without re-uploading acknowledged games.
 
-Runs periodically from the existing status workflow. GitHub artifact archives are
+Runs periodically from the consolidated self-play maintenance job. GitHub artifact archives are
 immutable for 14 days. An HF receipt is written only after the replay has been
 uploaded AND independently verified by upload_batch.merge_and_upload().
 """
@@ -51,9 +51,9 @@ def recover():
             if datetime.fromisoformat(timestamp).timestamp() < cutoff:
                 print(f"[Recovery] Reached 13-day artifact retention cutoff.")
                 return
-            if run.get("status") != "completed" or run.get("conclusion") not in (
-                "failure", "cancelled", "timed_out"
-            ):
+            # The overall run may succeed after a failed earlier uploader.
+            # Inspect *all* completed rounds and recover only unverified waves.
+            if run.get("status") != "completed":
                 continue
             run_id = int(run["id"])
             # Never rely on mutable branch HEAD for a recovery run's input.
@@ -76,14 +76,18 @@ def recover():
             # its recovery artifact. Consult the completed writer job's result.
             if sources_by_wave:
                 jobs = gh_json(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
-                failed_waves = set()
+                verified_waves = set()
                 for job in jobs:
-                    label = job.get("name", "")
-                    match = re.search(r"wave(\d+) / Wave \d+ / worker 16 HF writer", label)
-                    if match and job.get("conclusion") != "success":
-                        failed_waves.add(match.group(1))
-                for wave in failed_waves:
-                    groups.setdefault(f"wave-{wave}", sources_by_wave.get(wave, []))
+                    match = re.search(
+                        r"Wave\s+(\d+)\s*/\s*worker 16 HF writer",
+                        job.get("name", ""), re.I,
+                    )
+                    if match and job.get("conclusion") == "success":
+                        verified_waves.add(match.group(1))
+                # Cancelled runs might never schedule the writer.
+                for wave, worker_artifacts in sources_by_wave.items():
+                    if wave not in verified_waves:
+                        groups.setdefault(f"wave-{wave}", worker_artifacts)
 
             for key, parts in sorted(groups.items()):
                 if not parts:

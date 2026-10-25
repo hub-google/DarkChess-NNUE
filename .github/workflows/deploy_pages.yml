@@ -1,4 +1,5 @@
 name: 🌐 部署暗棋網頁端至 GitHub Pages (Deploy Frontend)
+run-name: DarkChess / GitHub Pages
 
 # 觸發條件：master 分支上有 frontend/、models/ 或此 workflow 檔案變更時觸發
 # Deploy on relevant source changes and retain manual deployment support.
@@ -13,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
   pages: write
   id-token: write
 
@@ -28,7 +30,13 @@ jobs:
     steps:
       - name: 📥 步驟 1：檢出專案程式碼 (Checkout Code)
         uses: actions/checkout@v4
-        
+
+      - name: Prune older completed Actions history
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+
       - name: 🟢 步驟 2：設定 Node.js 執行環境 (Node.js 22)
         uses: actions/setup-node@v4
         with:

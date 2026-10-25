@@ -38,6 +38,35 @@ class RecoveryTests(unittest.TestCase):
         upload.assert_not_called()
         api.upload_file.assert_not_called()
 
+    def test_successful_overall_run_still_recovers_failed_wave(self):
+        api = MagicMock()
+        api.file_exists.return_value = True
+        def fake_api(resource):
+            if "/workflows/self_play.yml/runs?" in resource:
+                return {"workflow_runs": [
+                    {"id": 123, "status": "completed", "conclusion": "success",
+                     "created_at": "2099-01-01T00:00:00Z"}]}
+            if "/runs/123/artifacts?" in resource:
+                return {"artifacts": [{"id": 88, "expired": False,
+                                       "name": "selfplay-wave-3-worker-4-123"}]}
+            if "/runs/123/jobs?" in resource:
+                return {"jobs": [
+                    {"name": "Wave 3 / worker 16 HF writer", "conclusion": "failure"},
+                    {"name": "Wave 4 / worker 16 HF writer", "conclusion": "success"}]}
+            raise AssertionError(resource)
+        with (patch.dict(os.environ, {"GITHUB_REPOSITORY": "hub-google/DarkChess-NNUE",
+                                      "GH_TOKEN": "fake", "HF_TOKEN": "fake"}),
+              patch.object(recovery, "HfApi", return_value=api),
+              patch.object(recovery, "gh_json", side_effect=fake_api),
+              patch.object(recovery, "merge_and_upload") as upload):
+            recovery.recover()
+        upload.assert_not_called()
+        api.file_exists.assert_called_once()
+        self.assertEqual(
+            "receipts/recovery/123/wave-3.json",
+            api.file_exists.call_args.kwargs["filename"],
+        )
+
     def test_failed_artifact_reuploaded_and_acknowledged(self):
         api = MagicMock()
         api.file_exists.return_value = False

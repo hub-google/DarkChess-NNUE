@@ -1,4 +1,5 @@
 name: Train and promote NNUE
+run-name: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'DarkChess / Python tests' || 'DarkChess / NNUE training' }}
 
 # Independent daily training is resilient to incomplete worker matrices.
 # Manual production runs may additionally trigger through workflow_run.
@@ -26,6 +27,9 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,6 +42,12 @@ jobs:
           pip install -r requirements.txt
       - name: Validate self-play, replay recovery, training and search
         run: python -m unittest discover -s test -p "test_*.py" -v
+      - name: Prune older completed Actions history
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
 
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
@@ -287,4 +297,11 @@ jobs:
           echo "[Training] Need at least 1000 complete games before training."
           echo "[Training] No false failure, no false champion promotion."
           echo "[Training] Next scheduled self-play will keep accumulating data."
+
+      - name: Prune older completed Actions history
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/prune_action_runs.py --scope all
 
