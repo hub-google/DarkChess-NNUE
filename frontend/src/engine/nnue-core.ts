@@ -1,9 +1,6 @@
 import { Board, Color, INITIAL_COUNTS, Piece } from './board'
 
 export type TensorInfo = { shape: number[]; offset: number; length: number }
-type Metadata = { format: number; inputSize: number; bytes: number; sha256: string; tensors: Record<string, TensorInfo> }
-
-const tensor = (data: ArrayBuffer, info: TensorInfo) => new Float32Array(data, info.offset, info.length)
 const reluClipped = (value: number) => Math.min(1, Math.max(0, value))
 
 export class BrowserNNUE {
