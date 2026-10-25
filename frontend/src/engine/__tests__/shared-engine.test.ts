@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Board, Piece, Color } from '../board'
+import { Board, Piece } from '../board'
 import { DarkChessEngine, chooseSearchedMove } from '../search'
 
 describe('One shared decision engine for website and self-play', () => {
