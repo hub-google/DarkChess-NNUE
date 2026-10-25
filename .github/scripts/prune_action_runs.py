@@ -135,15 +135,13 @@ def choose_deletions(workflow, runs, protected_run_id=None):
     groups = defaultdict(list)
     for run in runs:
         groups[run_group(workflow, run)].append(run)
-    labelled_schedules = (
-        workflow == "self_play"
-        and any(k in groups for k in ("watchdog", "HF maintenance", "keepalive"))
-    )
     selected = []
     for group, records in groups.items():
         # Legacy scheduled/push records have been replaced by labelled tasks.
         # The new run-name is now the durable record for those logical jobs.
-        keep_count = 0 if labelled_schedules and group in (
+        # Old scheduled/push-only orchestration runs will never recur under the
+        # new task names. They can all disappear; manual rounds remain protected.
+        keep_count = 0 if workflow == "self_play" and group in (
             "legacy scheduled check", "legacy self-play setup"
         ) else 1
         records.sort(key=lambda r: (r.get("created_at", ""), int(r["id"])), reverse=True)

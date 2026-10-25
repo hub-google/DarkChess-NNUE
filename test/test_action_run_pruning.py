@@ -33,6 +33,16 @@ class ActionRunPruningTests(unittest.TestCase):
                          [run(1, status="in_progress", created="2026-10-24"),
                           run(2, created="2026-10-25")]), [])
 
+    def test_retired_legacy_schedules_are_removed_without_touching_latest_round(self):
+        runs = [
+            run(7, event="push", created="2026-10-20"),
+            run(8, event="schedule", created="2026-10-21"),
+            run(9, event="schedule", created="2026-10-22"),
+            run(10, event="workflow_dispatch", created="2026-10-23", status="in_progress"),
+        ]
+        selected = pruner.choose_deletions("self_play", runs)
+        self.assertEqual({item["id"] for _, item in selected}, {7, 8, 9})
+
     def test_cancel_is_last_manual_round_and_not_erased_by_watchdog(self):
         runs = [
             run(21, status="completed", created="2026-10-24"),
