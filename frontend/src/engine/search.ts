@@ -1,4 +1,4 @@
-/** Public-belief expectiminimax for the browser, bounded for UI responsiveness.
+/** Public-belief expectiminimax shared by browser and Node self-play.
 
     Hidden contents are *never* consulted when choosing a move. A speculative
     reveal overwrites ONLY the selected square with each possible remaining
@@ -71,7 +71,6 @@ export class DarkChessEngine {
     if (state.draw) return 0
     if (state.winner === Color.RED) return 1
     if (state.winner === Color.BLACK) return -1
-    const hidden = state.grid.filter(p => p === Piece.HIDDEN).length
     // A large early chance tree is more efficiently scored by cheap material;
     // reserve expensive browser NNUE forwards for later revealed positions.
     return this.evaluator ? this.evaluator(state) : fromMaterial(state)
