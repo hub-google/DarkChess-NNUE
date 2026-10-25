@@ -1,7 +1,7 @@
 name: Continuous self-play and recovery
 run-name: ${{ github.event_name == 'workflow_dispatch' && 'DarkChess / Self-play' || github.event.schedule == '23 * * * *' && 'DarkChess / Watchdog' || github.event.schedule == '17 */3 * * *' && 'DarkChess / HF maintenance' || github.event.schedule == '43 3 1 * *' && 'DarkChess / Keepalive' || 'DarkChess / Self-play system' }}
 
-# Exactly three visible active workflows:
+# Exactly three visible active workflows; ALL games use shared DarkChessEngine:
 # 1. This file: five-wave self-play + HF recovery + public counters
 # 2. train.yml: training, tests and promotion
 # 3. deploy_pages.yml: GitHub Pages publishing
@@ -45,27 +45,31 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-      - name: Install CPU dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install shared TypeScript decision engine and Python replay checker
         run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: Generate games with bounded runtime and cancellation-aware child process
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: Generate high-quality games with shared DarkChessEngine and cancellation-safe child process
         shell: bash
         env:
           WORKER_ID: ${{ matrix.worker_id }}
           BATCH_SIZE: "10"
           NUM_BATCHES: "1"
-          SELF_PLAY_TEMPERATURE: "0.8"
-          EXPLORE_PLIES: "20"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
           SEARCH_MAX_SECONDS: "3.0"
-          POLICY_PRIOR_MIX: "0.15"
-          OPENING_SEARCH_DEPTH: "1"
-          SEARCH_NODE_BUDGET_EARLY: "500"
-          SEARCH_NODE_BUDGET_MID: "1200"
-          SEARCH_NODE_BUDGET_LATE: "2500"
-          TORCH_NUM_THREADS: "1"
-          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+          SEARCH_NODE_BUDGET_EARLY: "6000"
+          SEARCH_NODE_BUDGET_MID: "12000"
+          SEARCH_NODE_BUDGET_LATE: "25000"
+          MIN_AVG_COMPLETED_DEPTH: "2.5"
+          MIN_LATE_COMPLETED_DEPTH: "2.5"
         run: |
           set -euo pipefail
           mkdir -p output_data
@@ -85,7 +89,7 @@ jobs:
             REMAINING=$(( BUDGET - $(date +%s) + START ))
             if [ "$REMAINING" -le 180 ]; then break; fi
             set +e
-            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
             CHILD_PID=$!
             wait "$CHILD_PID"
             RESULT=$?
@@ -179,27 +183,31 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-      - name: Install CPU dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install shared TypeScript decision engine and Python replay checker
         run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: Generate games with bounded runtime and cancellation-aware child process
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: Generate high-quality games with shared DarkChessEngine and cancellation-safe child process
         shell: bash
         env:
           WORKER_ID: ${{ matrix.worker_id }}
           BATCH_SIZE: "10"
           NUM_BATCHES: "1"
-          SELF_PLAY_TEMPERATURE: "0.8"
-          EXPLORE_PLIES: "20"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
           SEARCH_MAX_SECONDS: "3.0"
-          POLICY_PRIOR_MIX: "0.15"
-          OPENING_SEARCH_DEPTH: "1"
-          SEARCH_NODE_BUDGET_EARLY: "500"
-          SEARCH_NODE_BUDGET_MID: "1200"
-          SEARCH_NODE_BUDGET_LATE: "2500"
-          TORCH_NUM_THREADS: "1"
-          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+          SEARCH_NODE_BUDGET_EARLY: "6000"
+          SEARCH_NODE_BUDGET_MID: "12000"
+          SEARCH_NODE_BUDGET_LATE: "25000"
+          MIN_AVG_COMPLETED_DEPTH: "2.5"
+          MIN_LATE_COMPLETED_DEPTH: "2.5"
         run: |
           set -euo pipefail
           mkdir -p output_data
@@ -219,7 +227,7 @@ jobs:
             REMAINING=$(( BUDGET - $(date +%s) + START ))
             if [ "$REMAINING" -le 180 ]; then break; fi
             set +e
-            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
             CHILD_PID=$!
             wait "$CHILD_PID"
             RESULT=$?
@@ -313,27 +321,31 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-      - name: Install CPU dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install shared TypeScript decision engine and Python replay checker
         run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: Generate games with bounded runtime and cancellation-aware child process
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: Generate high-quality games with shared DarkChessEngine and cancellation-safe child process
         shell: bash
         env:
           WORKER_ID: ${{ matrix.worker_id }}
           BATCH_SIZE: "10"
           NUM_BATCHES: "1"
-          SELF_PLAY_TEMPERATURE: "0.8"
-          EXPLORE_PLIES: "20"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
           SEARCH_MAX_SECONDS: "3.0"
-          POLICY_PRIOR_MIX: "0.15"
-          OPENING_SEARCH_DEPTH: "1"
-          SEARCH_NODE_BUDGET_EARLY: "500"
-          SEARCH_NODE_BUDGET_MID: "1200"
-          SEARCH_NODE_BUDGET_LATE: "2500"
-          TORCH_NUM_THREADS: "1"
-          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+          SEARCH_NODE_BUDGET_EARLY: "6000"
+          SEARCH_NODE_BUDGET_MID: "12000"
+          SEARCH_NODE_BUDGET_LATE: "25000"
+          MIN_AVG_COMPLETED_DEPTH: "2.5"
+          MIN_LATE_COMPLETED_DEPTH: "2.5"
         run: |
           set -euo pipefail
           mkdir -p output_data
@@ -353,7 +365,7 @@ jobs:
             REMAINING=$(( BUDGET - $(date +%s) + START ))
             if [ "$REMAINING" -le 180 ]; then break; fi
             set +e
-            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
             CHILD_PID=$!
             wait "$CHILD_PID"
             RESULT=$?
@@ -447,27 +459,31 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-      - name: Install CPU dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install shared TypeScript decision engine and Python replay checker
         run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: Generate games with bounded runtime and cancellation-aware child process
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: Generate high-quality games with shared DarkChessEngine and cancellation-safe child process
         shell: bash
         env:
           WORKER_ID: ${{ matrix.worker_id }}
           BATCH_SIZE: "10"
           NUM_BATCHES: "1"
-          SELF_PLAY_TEMPERATURE: "0.8"
-          EXPLORE_PLIES: "20"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
           SEARCH_MAX_SECONDS: "3.0"
-          POLICY_PRIOR_MIX: "0.15"
-          OPENING_SEARCH_DEPTH: "1"
-          SEARCH_NODE_BUDGET_EARLY: "500"
-          SEARCH_NODE_BUDGET_MID: "1200"
-          SEARCH_NODE_BUDGET_LATE: "2500"
-          TORCH_NUM_THREADS: "1"
-          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+          SEARCH_NODE_BUDGET_EARLY: "6000"
+          SEARCH_NODE_BUDGET_MID: "12000"
+          SEARCH_NODE_BUDGET_LATE: "25000"
+          MIN_AVG_COMPLETED_DEPTH: "2.5"
+          MIN_LATE_COMPLETED_DEPTH: "2.5"
         run: |
           set -euo pipefail
           mkdir -p output_data
@@ -487,7 +503,7 @@ jobs:
             REMAINING=$(( BUDGET - $(date +%s) + START ))
             if [ "$REMAINING" -le 180 ]; then break; fi
             set +e
-            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
             CHILD_PID=$!
             wait "$CHILD_PID"
             RESULT=$?
@@ -581,27 +597,31 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-      - name: Install CPU dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install shared TypeScript decision engine and Python replay checker
         run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: Generate games with bounded runtime and cancellation-aware child process
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: Generate high-quality games with shared DarkChessEngine and cancellation-safe child process
         shell: bash
         env:
           WORKER_ID: ${{ matrix.worker_id }}
           BATCH_SIZE: "10"
           NUM_BATCHES: "1"
-          SELF_PLAY_TEMPERATURE: "0.8"
-          EXPLORE_PLIES: "20"
+          SELF_PLAY_TEMPERATURE: "0.20"
+          EXPLORE_PLIES: "12"
+          EXPLORE_VALUE_MARGIN: "0.04"
           SEARCH_MAX_SECONDS: "3.0"
-          POLICY_PRIOR_MIX: "0.15"
-          OPENING_SEARCH_DEPTH: "1"
-          SEARCH_NODE_BUDGET_EARLY: "500"
-          SEARCH_NODE_BUDGET_MID: "1200"
-          SEARCH_NODE_BUDGET_LATE: "2500"
-          TORCH_NUM_THREADS: "1"
-          BOOTSTRAP_OPPONENT_PROBABILITY: "0.25"
+          SEARCH_NODE_BUDGET_EARLY: "6000"
+          SEARCH_NODE_BUDGET_MID: "12000"
+          SEARCH_NODE_BUDGET_LATE: "25000"
+          MIN_AVG_COMPLETED_DEPTH: "2.5"
+          MIN_LATE_COMPLETED_DEPTH: "2.5"
         run: |
           set -euo pipefail
           mkdir -p output_data
@@ -621,7 +641,7 @@ jobs:
             REMAINING=$(( BUDGET - $(date +%s) + START ))
             if [ "$REMAINING" -le 180 ]; then break; fi
             set +e
-            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" python -u src/workers/self_play.py &
+            timeout --signal=TERM --kill-after=5s "$((REMAINING - 180))s" node .shared-build/src/workers/self_play_shared.js &
             CHILD_PID=$!
             wait "$CHILD_PID"
             RESULT=$?

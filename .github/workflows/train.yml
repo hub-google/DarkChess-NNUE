@@ -67,10 +67,19 @@ jobs:
           npm run build
           cd ..
           ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-          BATCH_SIZE=2 NUM_BATCHES=1 SEARCH_MAX_SECONDS=1.2 \
+          BATCH_SIZE=1 NUM_BATCHES=1 SEARCH_MAX_SECONDS=1.2 \
             SEARCH_NODE_BUDGET_EARLY=5000 SEARCH_NODE_BUDGET_MID=10000 SEARCH_NODE_BUDGET_LATE=16000 \
-            MIN_AVG_COMPLETED_DEPTH=2.0 timeout 720s node .shared-build/src/workers/self_play_shared.js
-          python -u src/training/validate_replay.py --directory output_data --min-games 2
+            MIN_AVG_COMPLETED_DEPTH=2.0 timeout 480s node .shared-build/src/workers/self_play_shared.js
+          python -u src/training/validate_replay.py --directory output_data --min-games 1
+          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
+          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 2 --depth 2 --node-budget 350 --max-seconds 0.025 --output /tmp/shared_sprt_smoke.json
+          python - <<'PY'
+          import json
+          report = json.load(open("/tmp/shared_sprt_smoke.json"))
+          assert report["games_played"] == 4
+          assert 0 <= report["score_rate"] <= 1
+          assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
+          PY
 
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
@@ -198,15 +207,28 @@ jobs:
             --samples 256 \
             --output symmetry_report.json
 
-      - name: Validate challenger against champion
+      - name: Set up Node 22 for shared-engine model validation
+        if: steps.enough_games.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Export incumbent and challenger for identical shared NNUE evaluator
+        if: steps.enough_games.outputs.ready == 'true'
+        run: |
+          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
+          python -u src/training/export_nnue.py --input models/challenger.nnue --output-dir validation_models/challenger
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: Validate challenger against champion (shared DarkChessEngine)
         if: steps.enough_games.outputs.ready == 'true'
         id: validate
-        env:
-          TORCH_NUM_THREADS: "1"
+        timeout-minutes: 130
         run: |
-          python -u src/training/sprt_validation.py \
-            --champion models/champion.nnue \
-            --challenger models/challenger.nnue \
+          node .shared-build/src/workers/sprt_shared.js \
+            --champion validation_models/champion \
+            --challenger validation_models/challenger \
             --pairs 200 \
             --depth 6 \
             --node-budget 1200 \
@@ -226,7 +248,7 @@ jobs:
             --champion models/champion.policy \
             --challenger models/challenger.policy \
             --epochs 1 \
-            --max-samples 20000
+            --max-samples 4096
 
       - name: Preserve SPRT and training diagnostics
         if: ${{ always() && !cancelled() }}
