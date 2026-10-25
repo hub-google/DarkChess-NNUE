@@ -1,5 +1,5 @@
 name: Train and promote NNUE
-run-name: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'DarkChess / Python tests' || 'DarkChess / NNUE training' }}
+run-name: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'DarkChess / Engine CI' || 'DarkChess / NNUE training' }}
 
 # Independent daily training is resilient to incomplete worker matrices.
 # Manual production runs may additionally trigger through workflow_run.
@@ -52,14 +52,12 @@ jobs:
         run: python .github/scripts/prune_action_runs.py --scope all
 
       - name: Set up Node 22 for shared engine acceptance
-        if: github.ref_name == 'refactor/shared-banqi-engine-quality-20261025'
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Test common browser and Node engine, and cross-language replay rules
-        if: github.ref_name == 'refactor/shared-banqi-engine-quality-20261025'
         timeout-minutes: 15
         run: |
           cd frontend
