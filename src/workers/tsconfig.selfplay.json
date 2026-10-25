@@ -4,6 +4,7 @@
     "lib": ["ES2022", "DOM"],
     "module": "CommonJS",
     "moduleResolution": "Node",
+    "ignoreDeprecations": "6.0",
     "rootDir": "../..",
     "outDir": "../../.shared-build",
     "typeRoots": ["../../frontend/node_modules/@types"],
