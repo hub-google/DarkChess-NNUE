@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "rootDir": "../..",
+    "outDir": "../../.shared-build",
+    "typeRoots": ["../../frontend/node_modules/@types"],
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": true,
+    "esModuleInterop": true
+  },
+  "include": [
+    "./self_play_shared.ts",
+    "../../frontend/src/engine/board.ts",
+    "../../frontend/src/engine/search.ts",
+    "../../frontend/src/engine/nnue-core.ts"
+  ]
+}
