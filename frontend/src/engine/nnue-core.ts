@@ -13,11 +13,16 @@ export class BrowserNNUE {
 
   evaluate(board: Board) {
     const input = extractFeatures(board)
+    // Exactly equivalent to dense FC1, but the 498-feature board vector is
+    // sparse. Collect its active coordinates ONCE rather than scanning 498
+    // entries for each of the 256 neurons at every search leaf.
+    const active: number[] = []
+    for (let col = 0; col < 498; col++) if (input[col] !== 0) active.push(col)
     const hidden1 = new Float32Array(256)
     for (let row = 0; row < 256; row++) {
       let sum = this.fc1b[row]
       const base = row * 498
-      for (let col = 0; col < 498; col++) if (input[col]) sum += this.fc1w[base + col] * input[col]
+      for (const col of active) sum += this.fc1w[base + col] * input[col]
       hidden1[row] = reluClipped(sum)
     }
     const hidden2 = new Float32Array(32)
