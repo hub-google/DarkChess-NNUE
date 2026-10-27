@@ -21,7 +21,8 @@ const VERSION = 'v2.1.0-perpetual-chase'
 // These four central cells are symmetry-related opening candidates;
 // no unmeasured win-rate advantage is claimed.
 const OPENING_SQUARES = [10, 13, 18, 21] as const
-const SEARCH_STRATEGY = 'fixed-opening-quick-first-ten-v1'
+// Checkpoints must not mix results computed at different horizons.
+const SEARCH_STRATEGY = 'fixed-opening-quick-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '12') + '-v2'
 const num = (key: string, defaultValue: number) => {
   const value = Number(process.env[key] ?? defaultValue)
   if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid ${key}=${value}`)
@@ -36,8 +37,12 @@ function targetDepth(ply: number): number {
   const smoke = process.env.SELF_PLAY_SMOKE_DEPTH
   if (smoke !== undefined) return Math.max(1, Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2)))
   if (ply === 0) return 0 // First flip: random from four predetermined central squares.
-  if (ply < 10) return 1 // Moves 2–10: single-ply complete search; fast.
-  return 12 // Move 11 onward: complete twelve-ply search without time/node limits.
+  if (ply < 10) return 1 // Moves 2–10: one-ply complete search.
+  const depth = num('SELF_PLAY_TARGET_DEPTH', 12)
+  if (![6, 8, 12].includes(depth) || !Number.isInteger(depth)) {
+    throw new Error('SELF_PLAY_TARGET_DEPTH must be 6, 8 or 12')
+  }
+  return depth // Move 11 onward: complete selected horizon, no early fallback.
 }
 function limits(board: Board): SearchLimits {
   // The fixed first flip does not invoke the engine. Other moves still require
@@ -240,7 +245,7 @@ function play(engine: DarkChessEngine, version: string): {
 
 function validateOpening(): void {
   if (targetDepth(0) !== 0 || targetDepth(1) !== 1 ||
-      targetDepth(9) !== 1 || targetDepth(10) !== 12) {
+      targetDepth(9) !== 1 || targetDepth(10) !== num('SELF_PLAY_TARGET_DEPTH', 12)) {
     throw new Error('Incorrect opening search depths')
   }
   for (let sample = 0; sample < 128; sample++) {
@@ -267,7 +272,7 @@ function main() {
   const count = num('BATCH_SIZE', 10) * num('NUM_BATCHES', 1)
   const output = process.env.OUTPUT_DIR ?? 'output_data'
   mkdirSync(output, {recursive: true})
-  console.log(`[Shared Engine] ${version}; opening=fixed, moves 2-10=depth-1, moves 11+=depth-12; search-time=unlimited, games=${count}`)
+  console.log(`[Shared Engine] ${version}; opening=fixed, moves 2-10=depth-1, moves 11+=depth-${targetDepth(10)}; search-time=unlimited, games=${count}`)
   let saved = 0
   for (let i = 0; i < count; i++) {
     try {

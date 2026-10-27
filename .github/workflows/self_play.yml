@@ -118,6 +118,11 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
+          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          case "$SEARCH_DEPTH" in
+            6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
+            *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
+          esac
           START=$(date +%s)
           BUDGET=20400
           while true; do
@@ -306,6 +311,11 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
+          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          case "$SEARCH_DEPTH" in
+            6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
+            *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
+          esac
           START=$(date +%s)
           BUDGET=20400
           while true; do
@@ -494,6 +504,11 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
+          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          case "$SEARCH_DEPTH" in
+            6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
+            *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
+          esac
           START=$(date +%s)
           BUDGET=20400
           while true; do
@@ -682,6 +697,11 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
+          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          case "$SEARCH_DEPTH" in
+            6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
+            *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
+          esac
           START=$(date +%s)
           BUDGET=20400
           while true; do
@@ -870,6 +890,11 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
+          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          case "$SEARCH_DEPTH" in
+            6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
+            *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
+          esac
           START=$(date +%s)
           BUDGET=20400
           while true; do
@@ -989,7 +1014,7 @@ jobs:
           VERIFIED_WRITERS=$(jq -n --argjson needs "$UPLOAD_STATUSES" \
             '$needs | [.[] | select(.outputs.uploaded == "true")] | length')
           if [ "$VERIFIED_WRITERS" -eq 0 ]; then
-            echo "[Autonomy] No completed depth-12 games this round; only checkpoints saved."
+            echo "[Autonomy] No completed validated games this round; only checkpoints saved."
           fi
           # A cancelled round is never permitted to dispatch its successor.
           CURRENT_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.status')
@@ -1032,6 +1057,109 @@ jobs:
           LATEST_RESULT=$(jq -r '.workflow_runs[0].conclusion // ""' <<< "$RECENT")
           if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" = "cancelled" ]; then
             echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
+            exit 0
+          fi
+          if [ ! -f .github/production_depth.txt ] || ! grep -Eq '^(6|8)            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "[Watchdog] $ACTIVE round(s) already active; no duplicate dispatch."
+            exit 0
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Watchdog] Started one new self-play round."
+
+  maintenance:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '17 */3 * * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝資料復原與統計工具
+        run: pip install numpy numba huggingface_hub
+      - name: 補傳先前上傳失敗的棋譜
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MAX_RECOVERY_GROUPS: "4"
+        run: python -u src/workers/recover_failed_uploads.py
+      - name: 僅清理已安全備份的完成紀錄
+        if: ${{ always() && !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python .github/scripts/prune_action_runs.py --scope all
+      - name: 統計已驗證且不重複的對弈局數
+        if: ${{ always() && !cancelled() }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u .github/scripts/publish_training_status.py
+      - name: 安全發布最新訓練狀態
+        if: ${{ always() && !cancelled() }}
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/public/training-status.json
+          if git diff --staged --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: publish verified self-play progress"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin master
+            if ! git rebase origin/master; then
+              git rebase --abort || true
+              echo "::error::Training status conflict; existing data preserved."
+              exit 1
+            fi
+            if git push origin HEAD:master; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$((attempt * 3))"
+          done
+          echo "::error::Could not push verified counters."
+          exit 1
+      - name: 統計更新時重新部署網站
+        if: ${{ !cancelled() && steps.publish.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+
+  monthly-keepalive:
+    if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 1
+      - name: 每月維持自動排程運作
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git checkout -B master origin/master
+            git commit --allow-empty -m "chore: monthly Actions schedule keepalive"
+            if git push origin master; then exit 0; fi
+          done
+          exit 1
+ .github/production_depth.txt; then
+            echo "[Watchdog] Production paused: one-worker depth pilot has not passed."
             exit 0
           fi
           ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \

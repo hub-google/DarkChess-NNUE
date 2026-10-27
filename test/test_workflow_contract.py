@@ -25,6 +25,8 @@ class WorkflowArchitectureTests(unittest.TestCase):
         self.assertIn("max-parallel: 15", content)
         self.assertEqual(content.count("第16號棋譜上傳員"), 5)
         self.assertIn("self-play-v3", content)
+        self.assertEqual(content.count("SEARCH_DEPTH="), 5)
+        self.assertIn("Production paused", content)
 
     def test_every_always_condition_checks_cancellation(self):
         for file in WORKFLOWS.glob("*.yml"):

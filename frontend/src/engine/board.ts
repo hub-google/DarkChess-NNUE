@@ -59,7 +59,8 @@ export class Board {
   static getColor(piece: Piece) { return colorOf(piece) }
 
   clone() {
-    const b = new Board(false)
+    // Avoid rebuilding the initial inventory for every speculative node.
+    const b = Object.create(Board.prototype) as Board
     b.grid = [...this.grid]; b.hidden = [...this.hidden]
     b.remainingCounts = [...this.remainingCounts]; b.captured = [...this.captured]
     b.turn = this.turn; b.winner = this.winner; b.draw = this.draw
@@ -94,7 +95,26 @@ export class Board {
     if (color === Color.NONE) return moves
     for (let from = 0; from < 32; from++) {
       if (colorOf(this.grid[from]) !== color) continue
-      for (let to = 0; to < 32; to++) if (this.canMove(from, to)) moves.push({ from, to })
+      // Neighbor moves for every piece; cannons can additionally capture along
+      // a row or column. Keep original ascending destination ordering.
+      const row = Math.floor(from / 8), col = from % 8
+      const candidates: number[] = []
+      if (row > 0) candidates.push(from - 8)
+      if (row < 3) candidates.push(from + 8)
+      if (col > 0) candidates.push(from - 1)
+      if (col < 7) candidates.push(from + 1)
+      if (typeOf(this.grid[from]) === 5) {
+        for (let c = 0; c < 8; c++) {
+          const to = row * 8 + c
+          if (c !== col && !candidates.includes(to)) candidates.push(to)
+        }
+        for (let r = 0; r < 4; r++) {
+          const to = r * 8 + col
+          if (r !== row && !candidates.includes(to)) candidates.push(to)
+        }
+      }
+      candidates.sort((a, b) => a - b)
+      for (const to of candidates) if (this.canMove(from, to)) moves.push({ from, to })
     }
     return moves
   }
