@@ -118,6 +118,36 @@ describe('One shared decision engine for website and self-play', () => {
     expect(b.legalMoves()).toContainEqual(analysis.move)
   })
 
+  it('uses only publicly known probabilities for sampled six-ply search', () => {
+    const b = new Board(false)
+    b.grid.fill(Piece.EMPTY)
+    b.remainingCounts.fill(0)
+    b.turn = Color.RED
+    b.grid[0] = Piece.RED_ROOK
+    b.grid[31] = Piece.BLK_ROOK
+    const hidden = [1, 2, 20, 22]
+    const pieces = [Piece.RED_PAWN, Piece.BLK_PAWN, Piece.RED_CANNON, Piece.BLK_CANNON]
+    for (let i = 0; i < hidden.length; i++) {
+      b.grid[hidden[i]] = Piece.HIDDEN
+      b.hidden[hidden[i]] = pieces[i]
+      b.remainingCounts[pieces[i] - 1]++
+    }
+    const alternate = b.clone()
+    for (let i = 0; i < hidden.length; i++) {
+      alternate.hidden[hidden[i]] = pieces[(i + 1) % hidden.length]
+    }
+    const limits = {maxDepth: 4, requireFullDepth: true, innerMoveLimit: 2, chanceSamples: 2}
+    const first = new DarkChessEngine().analyze(b, limits)
+    const again = new DarkChessEngine().analyze(b, limits)
+    const privateShuffle = new DarkChessEngine().analyze(alternate, limits)
+    expect(first.depth).toBe(4)
+    expect(Object.keys(first.rootValues)).toHaveLength(b.legalMoves().length)
+    expect(b.legalMoves()).toContainEqual(first.move)
+    expect(first.move).toEqual(again.move)
+    expect(first.rootValues).toEqual(again.rootValues)
+    expect(first.rootValues).toEqual(privateShuffle.rootValues)
+  })
+
   it('reports complete search depth rather than requested depth', () => {
     const b = new Board(false)
     b.play({from: 0, to: 0, flip: true})
