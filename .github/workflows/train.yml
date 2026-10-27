@@ -78,6 +78,14 @@ jobs:
           assert 0 <= report["score_rate"] <= 1
           assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
           PY
+      - name: 依明確指令啟動正式自我對弈
+        if: ${{ contains(github.event.head_commit.message, '[啟動自我對弈]') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master --field continuous=true
+          echo "正式新版對弈已派送。"
+
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
     # Ordinary source pushes execute only regression CI.
