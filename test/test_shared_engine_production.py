@@ -34,6 +34,7 @@ class SharedDecisionEngineProductionTests(unittest.TestCase):
         self.assertIn("SELF_PLAY_TARGET_DEPTH", worker)
         self.assertIn("Production paused until one CPU pilot completes a validated game.", workflow)
         self.assertIn("function searchedOpening(", worker)
+        self.assertIn("analysis.depth !== targetDepth(0)", worker)
         self.assertIn("depthAllowed(d, ply)", worker)
         self.assertIn("const analysis = engine.analyze(board, {", worker)
         self.assertIn("strategy: SEARCH_STRATEGY", worker)
