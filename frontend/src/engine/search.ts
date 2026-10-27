@@ -36,6 +36,7 @@ class BudgetExceeded extends Error {}
 
 /** Periodic, read-only statistics; does not change exact search results. */
 export type SearchProgress = {
+  chancePrunes: number
   depth: number
   nodes: number
   elapsedMs: number
@@ -46,6 +47,8 @@ export type SearchProgress = {
   evaluations: number
 }
 export type SearchLimits = {
+  /** Disable bounded chance-node windows only when comparing to reference search. */
+  useChanceBounds?: boolean
   onProgress?: (progress: SearchProgress) => void
   progressIntervalMs?: number
   maxDepth?: number
@@ -89,6 +92,7 @@ export class DarkChessEngine {
   const deadline = startedAt + maxMs
   let nodes = 0
   let cacheHits = 0
+  let chancePrunes = 0
   let evaluations = 0
   let rootsDone = Object.keys(limits.resumeRootValues ?? {}).length
   let lastProgressAt = startedAt
@@ -98,7 +102,7 @@ export class DarkChessEngine {
     if (!force && now - lastProgressAt < (limits.progressIntervalMs ?? 30000)) return
     lastProgressAt = now
     limits.onProgress({
-      depth: maxDepth, nodes, elapsedMs: now - startedAt, rootsDone,
+      chancePrunes, depth: maxDepth, nodes, elapsedMs: now - startedAt, rootsDone,
       rootsTotal: available.length, cacheHits,
       cacheEntries: limits.resumeSubtrees?.size ?? 0, evaluations,
     })
@@ -132,17 +136,47 @@ export class DarkChessEngine {
     for (let index = 0; index < 14; index++) {
       const count = state.remainingCounts[index]
       if (count <= 0) continue
+      const probability = count / total
+      // All terminal and NNUE evaluations are bounded to [-1, 1].
+      // After this outcome, later unobserved outcomes weigh at most
+      // +/- remaining. Derive a provably safe child alpha/beta window:
+      //   S + p*child + R <= alpha  => chance is an upper-bound cutoff
+      //   S + p*child - R >= beta   => chance is a lower-bound cutoff.
+      // The resulting threshold does not sample/discard any chance outcome.
+      const remaining = Math.max(0, 1 - seen - probability)
+      const bounded = limits.useChanceBounds !== false
+      const childAlpha = bounded && Number.isFinite(alpha)
+        ? (alpha - expected - remaining) / probability : -Infinity
+      const childBeta = bounded && Number.isFinite(beta)
+        ? (beta - expected + remaining) / probability : Infinity
+      if (childAlpha >= 1 + 1e-12) {
+        chancePrunes++
+        return alpha
+      }
+      if (childBeta <= -1 - 1e-12) {
+        chancePrunes++
+        return beta
+      }
       const child = state.clone()
-      // Force THIS hypothetical reveal, do not read actual private referee mapping.
+      // Force THIS hypothetical reveal, never read private face-down layout.
       child.hidden[move.from] = (index + 1) as Piece
       if (!child.play(move)) throw new Error('search attempted illegal flip')
-      const probability = count / total
-      expected += probability * search(child, depth - 1, -Infinity, Infinity)
+      const outcome = search(child, depth - 1,
+        childAlpha <= -1 ? -Infinity : childAlpha,
+        childBeta >= 1 ? Infinity : childBeta)
+      if (outcome <= childAlpha && Number.isFinite(childAlpha)) {
+        chancePrunes++
+        return alpha
+      }
+      if (outcome >= childBeta && Number.isFinite(childBeta)) {
+        chancePrunes++
+        return beta
+      }
+      expected += probability * outcome
       seen += probability
-      const remaining = Math.max(0, 1 - seen)
-      // All evaluations are in [-1, 1], so these Star1 bounds are safe.
-      if (expected + remaining <= alpha) return expected + remaining
-      if (expected - remaining >= beta) return expected - remaining
+      const left = Math.max(0, 1 - seen)
+      if (expected + left <= alpha) { chancePrunes++; return expected + left }
+      if (expected - left >= beta) { chancePrunes++; return expected - left }
     }
     return Math.max(-1, Math.min(1, expected))
   }
