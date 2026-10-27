@@ -153,7 +153,7 @@ jobs:
           # A completed 135-second profiling window is not an engine failure.
           # Explicitly disable the runner's inherited bash -e for timeout.
           set +e
-          timeout --signal=TERM --kill-after=5s 135s env \
+          timeout --signal=TERM --kill-after=5s 360s env \
             SELF_PLAY_TARGET_DEPTH=6 SELF_PLAY_INNER_MOVE_LIMIT=2 SELF_PLAY_CHANCE_SAMPLES=3 WORKER_ID=profile \
             RESUME_STATE_DIR=profile_state OUTPUT_DIR=profile_output \
             BATCH_SIZE=1 NUM_BATCHES=1 \
@@ -175,6 +175,9 @@ jobs:
           if ! grep -Fq '[Root Complete]' six-ply-profile.log; then
             echo "::warning::No complete six-ply root move was produced during profiling."
           fi
+          echo "### 完整棋譜合法性驗證" >> "$GITHUB_STEP_SUMMARY"
+          python -u src/training/validate_replay.py --directory profile_output --min-games 1
+          echo "Six-ply sampled self-play: one full legal game verified" >> "$GITHUB_STEP_SUMMARY"
       - name: 保存六層效能紀錄
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v4
