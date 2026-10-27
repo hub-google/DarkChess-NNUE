@@ -103,7 +103,10 @@ jobs:
     needs: python-regression
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[深度試跑]') && needs.python-regression.result == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 85
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -136,6 +139,23 @@ jobs:
             fi
           done
           exit 1
+      - name: 試跑成功後才寫入正式深度並啟動十五人
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DEPTH="$(grep -oE 'FULL_GAME_DEPTH=[68]' "$GITHUB_STEP_SUMMARY" | tail -1 | cut -d= -f2)"
+          test "$DEPTH" = 8 -o "$DEPTH" = 6
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin master
+          git checkout -B proven-cpu-depth origin/master
+          printf "%s\n" "$DEPTH" > .github/production_depth.txt
+          git add .github/production_depth.txt
+          git commit -m "chore: enable verified CPU depth $DEPTH"
+          git push origin HEAD:master
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "單 CPU 完整棋局驗證通過，正式採用 $DEPTH 層。"
 
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
