@@ -91,12 +91,23 @@ jobs:
           assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
           PY
       - name: 依明確指令啟動正式自我對弈
-        if: ${{ contains(github.event.head_commit.message, '[啟動自我對弈]') }}
+        if: ${{ !cancelled() && contains(github.event.head_commit.message, '[啟動自我對弈]') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          CURRENT_DEPTH="$(cat .github/production_depth.txt)"
+          case "$CURRENT_DEPTH" in
+            6|8) echo "啟動正式 NNUE CPU 自我對弈，完整搜尋深度 $CURRENT_DEPTH" ;;
+            *) echo "::error::Invalid production depth: $CURRENT_DEPTH"; exit 1 ;;
+          esac
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "已有 $ACTIVE 組自我對弈在執行，不重複啟動。"
+            exit 0
+          fi
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master --field continuous=true
-          echo "正式新版對弈已派送。"
+          echo "正式 NNUE CPU 自我對弈已派送，15 名運算員。"
 
   depth-pilot:
     name: 單運算員深度試跑
