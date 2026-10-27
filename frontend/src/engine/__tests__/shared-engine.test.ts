@@ -97,6 +97,27 @@ describe('One shared decision engine for website and self-play', () => {
     }
   })
 
+  it('keeps six plies and every root option in selective CPU mode', () => {
+    const b = new Board(false)
+    b.grid.fill(Piece.EMPTY)
+    b.remainingCounts.fill(0)
+    b.turn = Color.RED
+    b.grid[0] = Piece.RED_ROOK
+    b.grid[31] = Piece.BLK_ROOK
+    b.grid[1] = Piece.HIDDEN
+    b.grid[24] = Piece.HIDDEN
+    b.hidden[1] = Piece.RED_PAWN
+    b.hidden[24] = Piece.BLK_PAWN
+    b.remainingCounts[6] = 1
+    b.remainingCounts[13] = 1
+    const analysis = new DarkChessEngine().analyze(b, {
+      maxDepth: 6, requireFullDepth: true, innerMoveLimit: 2,
+    })
+    expect(analysis.depth).toBe(6)
+    expect(Object.keys(analysis.rootValues)).toHaveLength(b.legalMoves().length)
+    expect(b.legalMoves()).toContainEqual(analysis.move)
+  })
+
   it('reports complete search depth rather than requested depth', () => {
     const b = new Board(false)
     b.play({from: 0, to: 0, flip: true})
