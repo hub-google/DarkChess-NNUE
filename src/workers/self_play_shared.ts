@@ -14,12 +14,12 @@ type Replay = {
   id: string; ts: number; ver: string; model: string; hid: number[]
   mov: number[]; q: number[]; v: number[]; qd: number[]
   pi: [number, number][][]; qn: number[]; qt: number[]; res: number; ply: number; draw_reason?: string
-  red_model?: string; black_model?: string
+  red_model?: string; black_model?: string; search_mode?: string
 }
 const VERSION = 'v2.1.0-perpetual-chase'
 // A depth-one public-belief search chooses the very first flip as well.
 // Distinct checkpoint strategies must never reuse incompatible root values.
-const SEARCH_STRATEGY = 'searched-opening-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '6') + '-v3'
+const SEARCH_STRATEGY = 'searched-opening-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '6') + '-branch-' + (process.env.SELF_PLAY_INNER_MOVE_LIMIT ?? 'all') + '-v4'
 const num = (key: string, defaultValue: number) => {
   const value = Number(process.env[key] ?? defaultValue)
   if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid ${key}=${value}`)
@@ -175,6 +175,8 @@ function play(engine: DarkChessEngine, version: string): {
     hid: board.hidden.map(x => Number(x) - 1),
     mov: [], q: [], v: [], qd: [], pi: [], qn: [], qt: [], res: 0, ply: 0,
     red_model: version, black_model: version,
+    search_mode: process.env.SELF_PLAY_INNER_MOVE_LIMIT
+      ? 'selective-six-ply-public-branch' : 'full-width-exact-six-ply',
   }
   let rootValues = saved?.rootValues ?? {}
   if (!saved && existsSync(memoPath())) unlinkSync(memoPath())
@@ -202,6 +204,8 @@ function play(engine: DarkChessEngine, version: string): {
     const staticValue = engine.evaluate(board)
     const analysis = engine.analyze(board, {
       ...limits(board),
+      innerMoveLimit: depth === 6
+        ? (num('SELF_PLAY_INNER_MOVE_LIMIT', 0) || undefined) : undefined,
       progressIntervalMs: 30000,
       onProgress: depth === 6 ? (s) => {
         const elapsed = Math.max(s.elapsedMs / 1000, 0.001)
@@ -284,7 +288,7 @@ function main() {
   const count = num('BATCH_SIZE', 10) * num('NUM_BATCHES', 1)
   const output = process.env.OUTPUT_DIR ?? 'output_data'
   mkdirSync(output, {recursive: true})
-  console.log(`[Shared Engine] ${version}; opening=depth-1, moves 1-10=depth-1, moves 11+=depth-${targetDepth(10)}; search-time=unlimited, games=${count}`)
+  console.log(`[Shared Engine] ${version}; opening=depth-1, moves 1-10=depth-1, moves 11+=depth-${targetDepth(10)}; interior_width=${process.env.SELF_PLAY_INNER_MOVE_LIMIT ?? 'all'}; search-time=unlimited, games=${count}`)
   let saved = 0
   for (let i = 0; i < count; i++) {
     try {
