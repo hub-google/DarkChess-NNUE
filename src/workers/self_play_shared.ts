@@ -207,7 +207,7 @@ function play(engine: DarkChessEngine, version: string): {
         const elapsed = Math.max(s.elapsedMs / 1000, 0.001)
         const nps = Math.round(s.nodes / elapsed)
         const heap = Math.round(process.memoryUsage().heapUsed / 1048576)
-        console.log(`[Search Progress] worker=${process.env.WORKER_ID ?? 'local'} ply=${board.ply + 1} depth=${depth} elapsed_s=${Math.round(elapsed)} nodes=${s.nodes} nps=${nps} roots=${s.rootsDone}/${s.rootsTotal} cache_hits=${s.cacheHits} cache_entries=${s.cacheEntries} evals=${s.evaluations} heap_mb=${heap}`)
+        console.log(`[Search Progress] worker=${process.env.WORKER_ID ?? 'local'} ply=${board.ply + 1} depth=${depth} elapsed_s=${Math.round(elapsed)} nodes=${s.nodes} nps=${nps} roots=${s.rootsDone}/${s.rootsTotal} cache_hits=${s.cacheHits} chance_prunes=${s.chancePrunes} cache_entries=${s.cacheEntries} evals=${s.evaluations} heap_mb=${heap}`)
       } : undefined,
       resumeRootValues: rootValues,
       resumeSubtrees: memo,
