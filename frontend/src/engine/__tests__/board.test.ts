@@ -87,6 +87,35 @@ describe('DarkChess Board Engine', () => {
     expect(board.draw).toBe(false)
   })
 
+  it('counts reversible repetitions but skips states after irreversible moves', () => {
+    board.grid.fill(Piece.EMPTY)
+    board.remainingCounts.fill(0)
+    board.turn = Color.RED
+    board.grid[0] = Piece.RED_ROOK
+    board.grid[31] = Piece.BLK_ROOK
+    for (const move of [
+      {from: 0, to: 1}, {from: 31, to: 30},
+      {from: 1, to: 0}, {from: 30, to: 31},
+    ]) expect(board.play(move)).toBe(true)
+    expect(board.halfMoveClock).toBe(4)
+    expect(board.repetitionCount()).toBe(2)
+
+    const capture = new Board(false)
+    capture.grid.fill(Piece.EMPTY)
+    capture.remainingCounts.fill(0)
+    capture.turn = Color.RED
+    capture.grid[0] = Piece.RED_ROOK
+    capture.grid[1] = Piece.BLK_PAWN
+    capture.grid[31] = Piece.BLK_KING
+    expect(capture.play({from: 0, to: 1})).toBe(true)
+    expect(capture.halfMoveClock).toBe(0)
+    expect(capture.repetitionCount()).toBe(1)
+
+    const revealed = new Board(false)
+    expect(revealed.play({from: 0, to: 0, flip: true})).toBe(true)
+    expect(revealed.repetitionCount()).toBe(1)
+  })
+
   it('exports the same 498 public features used during training', () => {
     board.grid.fill(Piece.EMPTY); board.grid[0] = Piece.RED_KING; board.grid[1] = Piece.HIDDEN
     board.remainingCounts[0] = 0; board.turn = Color.BLACK; board.halfMoveClock = 30
