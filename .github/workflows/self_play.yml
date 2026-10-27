@@ -8,6 +8,10 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' |
 # Cancellation: ALWAYS guard downstream work with !cancelled().
 # The scheduler must not restart after the most recent round was cancelled.
 on:
+  push:
+    branches: [master]
+    paths:
+      - ".github/activate-single-run.trigger"
   workflow_dispatch:
     inputs:
       continuous:
@@ -29,6 +33,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  activate-single-run:
+    name: 一次性停止舊五輪並啟動新版
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 停止舊 Run 並啟動五小時單 Run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OLD_RUN=40443703219
+          OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
+          if [ "$OLD_STATUS" != "completed" ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN/cancel"
+            for RETRY in $(seq 1 24); do
+              sleep 5
+              OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
+              if [ "$OLD_STATUS" = "completed" ]; then break; fi
+            done
+            if [ "$OLD_STATUS" != "completed" ]; then
+              echo "::error::Old run not stopped; refuse concurrent 15-worker runs."
+              exit 1
+            fi
+          fi
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=20" --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "已存在一個活躍對弈 Run，不重複啟動。"
+            exit 0
+          fi
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "新版單 Run 自我對弈已派送。"
 
   selfplay-workers:
     name: 對弈運算員 ${{ matrix.worker_id }}
