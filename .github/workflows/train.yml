@@ -78,21 +78,6 @@ jobs:
           assert 0 <= report["score_rate"] <= 1
           assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
           PY
-      - name: 結束舊版自動對弈並啟用新開局規則
-        if: ${{ contains(github.event.head_commit.message, '[切換新開局]') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          OLD_RUN=40341312217
-          STATUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status' || true)"
-          if [ "$STATUS" != "completed" ]; then
-            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN/cancel"
-            echo "已要求結束舊版自動對弈：$OLD_RUN"
-          fi
-          gh workflow run self_play.yml --ref master --field continuous=true
-          echo "已派送使用新版規則的自動對弈。"
-
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
     # Ordinary source pushes execute only regression CI.
