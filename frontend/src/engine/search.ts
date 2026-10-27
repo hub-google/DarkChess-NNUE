@@ -32,6 +32,41 @@ function ordered(board: Board, moves: Move[]) {
     || moveKey(a) - moveKey(b)
   ))
 }
+/**
+ * Optional bounded-width search for production CPU self-play.
+ * This still reaches the requested ply horizon for every retained branch and
+ * sums ALL possible identities for every explored flip, but does NOT claim
+ * exhaustive minimax over all legal interior moves. Root moves remain complete.
+ */
+function selectInteriorMoves(board: Board, ranked: Move[], requested: number): Move[] {
+  const hidden = board.remainingCounts.reduce((sum, count) => sum + count, 0)
+  const limit = hidden >= 14 ? Math.min(requested, 2)
+    : hidden >= 7 ? Math.min(Math.max(requested, 3), 3)
+    : hidden >= 1 ? Math.max(requested, 4) : Infinity
+  if (ranked.length <= limit) return ranked
+  const captures = ranked.filter(move => capture(board, move))
+  const flips = ranked.filter(isFlip)
+  const quiet = ranked.filter(move => !isFlip(move) && !capture(board, move))
+  // Use only PUBLIC board state when breaking equally ranked flip options.
+  let seed = 2166136261
+  for (let i = 0; i < board.grid.length; i++) {
+    seed = Math.imul(seed ^ (board.grid[i] + 17 * (i + 1)), 16777619)
+  }
+  const spread = flips.slice().sort((a, b) => {
+    const score = (m: Move) => Math.imul((m.from + 1) ^ seed, 0x9e3779b1) >>> 0
+    return score(a) - score(b)
+  })
+  const chosen: Move[] = []
+  const include = (move: Move | undefined) => {
+    if (move && chosen.length < limit && !chosen.includes(move)) chosen.push(move)
+  }
+  include(captures[0]) // never drop the best immediate capture
+  include(spread[0])   // never drop all hidden-information opportunities
+  include(quiet[0])    // retain a reversible positional option where possible
+  for (const move of [...captures, ...spread, ...quiet]) include(move)
+  return chosen
+}
+
 class BudgetExceeded extends Error {}
 
 /** Periodic, read-only statistics; does not change exact search results. */
@@ -49,6 +84,8 @@ export type SearchProgress = {
 export type SearchLimits = {
   /** Disable bounded chance-node windows only when comparing to reference search. */
   useChanceBounds?: boolean
+  /** Experimental: root remains exhaustive; cap only interior move width. */
+  innerMoveLimit?: number
   onProgress?: (progress: SearchProgress) => void
   progressIntervalMs?: number
   maxDepth?: number
@@ -205,8 +242,10 @@ export class DarkChessEngine {
       }
       return value
     }
-    const moves = ordered(state, state.legalMoves())
-    if (!moves.length) return evalPosition(state)
+    const rankedMoves = ordered(state, state.legalMoves())
+    if (!rankedMoves.length) return evalPosition(state)
+    const moves = limits.innerMoveLimit !== undefined && limits.innerMoveLimit > 0
+      ? selectInteriorMoves(state, rankedMoves, limits.innerMoveLimit) : rankedMoves
     if (state.turn === Color.RED) {
       let value = -Infinity
       for (const move of moves) {
