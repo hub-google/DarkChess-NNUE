@@ -109,7 +109,7 @@ jobs:
           trap stop_child INT TERM
           SEARCH_DEPTH="$(cat .github/production_depth.txt)"
           case "$SEARCH_DEPTH" in
-            6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
+            6) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
             *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
           esac
           START=$(date +%s)
@@ -260,7 +260,7 @@ jobs:
           set -euo pipefail
           # Manual cancellation means PAUSED, until the user dispatches a round.
           # This persists without a separate repository variable or workflow.
-          if [ "$(cat .github/production_depth.txt 2>/dev/null)" != "8" ] && [ "$(cat .github/production_depth.txt 2>/dev/null)" != "6" ]; then
+          if [ "$(cat .github/production_depth.txt 2>/dev/null)" != "6" ]; then
             echo "[Watchdog] Production paused: CPU depth pilot has not passed."
             exit 0
           fi

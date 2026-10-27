@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Board, Piece, Color } from '../board'
-import { DarkChessEngine, chooseSearchedMove } from '../search'
+import { DarkChessEngine, chooseSearchedMove, type SearchProgress } from '../search'
 
 describe('One shared decision engine for website and self-play', () => {
   it('produces the identical legal choice through class and compatibility function', () => {
@@ -40,13 +40,17 @@ describe('One shared decision engine for website and self-play', () => {
     b.grid[1] = Piece.BLK_PAWN
     b.grid[31] = Piece.BLK_KING
     const completed: number[] = []
+    const progress: SearchProgress[] = []
     const analysis = new DarkChessEngine().analyze(b, {
       maxDepth: 4, requireFullDepth: true,
       onRootCompleted: m => completed.push(m.from * 32 + m.to),
+      onProgress: s => progress.push(s),
     })
     expect(analysis.depth).toBe(4)
     expect(Object.keys(analysis.rootValues)).toHaveLength(b.legalMoves().length)
     expect(completed).toHaveLength(b.legalMoves().length)
+    expect(progress.at(-1)?.rootsDone).toBe(b.legalMoves().length)
+    expect(progress.at(-1)?.depth).toBe(4)
     expect(b.legalMoves()).toContainEqual(analysis.move)
     const resumed = new DarkChessEngine().analyze(b, {
       maxDepth: 4, requireFullDepth: true, resumeRootValues: analysis.rootValues,

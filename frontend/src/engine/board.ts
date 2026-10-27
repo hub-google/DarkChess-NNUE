@@ -234,7 +234,7 @@ export class Board {
     if (!red) this.winner = Color.BLACK
     else if (!black) this.winner = Color.RED
     else if (this.halfMoveClock >= 60) this.draw = true
-    else if (this.legalMoves(this.turn).length === 0) this.winner = 1 - this.turn
+    else if (!this.grid.includes(Piece.HIDDEN) && this.legalMoves(this.turn).length === 0) this.winner = 1 - this.turn
     return true
   }
 }

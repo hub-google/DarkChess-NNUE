@@ -19,7 +19,7 @@ type Replay = {
 const VERSION = 'v2.1.0-perpetual-chase'
 // A depth-one public-belief search chooses the very first flip as well.
 // Distinct checkpoint strategies must never reuse incompatible root values.
-const SEARCH_STRATEGY = 'searched-opening-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '12') + '-v3'
+const SEARCH_STRATEGY = 'searched-opening-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '6') + '-v3'
 const num = (key: string, defaultValue: number) => {
   const value = Number(process.env[key] ?? defaultValue)
   if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid ${key}=${value}`)
@@ -34,9 +34,9 @@ function targetDepth(ply: number): number {
   const smoke = process.env.SELF_PLAY_SMOKE_DEPTH
   if (smoke !== undefined) return Math.max(1, Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2)))
   if (ply < 10) return 1 // Moves 1–10: all searched exactly one ply.
-  const depth = num('SELF_PLAY_TARGET_DEPTH', 12)
-  if (![6, 8, 12].includes(depth) || !Number.isInteger(depth)) {
-    throw new Error('SELF_PLAY_TARGET_DEPTH must be 6, 8 or 12')
+  const depth = num('SELF_PLAY_TARGET_DEPTH', 6)
+  if (depth !== 6 || !Number.isInteger(depth)) {
+    throw new Error('SELF_PLAY_TARGET_DEPTH must be 6')
   }
   return depth // Move 11 onward: complete selected horizon, no early fallback.
 }
@@ -202,6 +202,13 @@ function play(engine: DarkChessEngine, version: string): {
     const staticValue = engine.evaluate(board)
     const analysis = engine.analyze(board, {
       ...limits(board),
+      progressIntervalMs: 30000,
+      onProgress: depth === 6 ? (s) => {
+        const elapsed = Math.max(s.elapsedMs / 1000, 0.001)
+        const nps = Math.round(s.nodes / elapsed)
+        const heap = Math.round(process.memoryUsage().heapUsed / 1048576)
+        console.log(`[Search Progress] worker=${process.env.WORKER_ID ?? 'local'} ply=${board.ply + 1} depth=${depth} elapsed_s=${Math.round(elapsed)} nodes=${s.nodes} nps=${nps} roots=${s.rootsDone}/${s.rootsTotal} cache_hits=${s.cacheHits} cache_entries=${s.cacheEntries} evals=${s.evaluations} heap_mb=${heap}`)
+      } : undefined,
       resumeRootValues: rootValues,
       resumeSubtrees: memo,
       onSubtreeCompleted: saveSubtree,
@@ -209,6 +216,7 @@ function play(engine: DarkChessEngine, version: string): {
         rootValues[encode(move)] = value
         flushMemo()
         saveCheckpoint(version, record, board, rootValues)
+        if (depth === 6) console.log(`[Root Complete] ply=${board.ply + 1} move=${encode(move)} roots=${Object.keys(rootValues).length}/${board.legalMoves().length}`)
       },
     })
     if (!analysis.move || analysis.depth !== depth) {
@@ -246,7 +254,7 @@ function play(engine: DarkChessEngine, version: string): {
 
 function validateOpening(): void {
   if (targetDepth(0) !== 1 || targetDepth(1) !== 1 ||
-      targetDepth(9) !== 1 || targetDepth(10) !== num('SELF_PLAY_TARGET_DEPTH', 12)) {
+      targetDepth(9) !== 1 || targetDepth(10) !== num('SELF_PLAY_TARGET_DEPTH', 6)) {
     throw new Error('Incorrect opening search depths')
   }
   const engine = new DarkChessEngine()

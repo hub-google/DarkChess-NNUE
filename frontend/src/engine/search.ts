@@ -34,7 +34,20 @@ function ordered(board: Board, moves: Move[]) {
 }
 class BudgetExceeded extends Error {}
 
+/** Periodic, read-only statistics; does not change exact search results. */
+export type SearchProgress = {
+  depth: number
+  nodes: number
+  elapsedMs: number
+  rootsDone: number
+  rootsTotal: number
+  cacheHits: number
+  cacheEntries: number
+  evaluations: number
+}
 export type SearchLimits = {
+  onProgress?: (progress: SearchProgress) => void
+  progressIntervalMs?: number
   maxDepth?: number
   nodeBudget?: number
   maxMs?: number
@@ -75,16 +88,33 @@ export class DarkChessEngine {
   const startedAt = performance.now()
   const deadline = startedAt + maxMs
   let nodes = 0
+  let cacheHits = 0
+  let evaluations = 0
+  let rootsDone = Object.keys(limits.resumeRootValues ?? {}).length
+  let lastProgressAt = startedAt
+  const reportProgress = (force = false) => {
+    if (!limits.onProgress) return
+    const now = performance.now()
+    if (!force && now - lastProgressAt < (limits.progressIntervalMs ?? 30000)) return
+    lastProgressAt = now
+    limits.onProgress({
+      depth: maxDepth, nodes, elapsedMs: now - startedAt, rootsDone,
+      rootsTotal: available.length, cacheHits,
+      cacheEntries: limits.resumeSubtrees?.size ?? 0, evaluations,
+    })
+  }
   const evalPosition = (state: Board) => {
     if (state.draw) return 0
     if (state.winner === Color.RED) return 1
     if (state.winner === Color.BLACK) return -1
+    evaluations++
     // A large early chance tree is more efficiently scored by cheap material;
     // reserve expensive browser NNUE forwards for later revealed positions.
     return this.evaluator ? this.evaluator(state) : fromMaterial(state)
   }
   const tick = () => {
     nodes += 1
+    if (limits.onProgress && nodes % 1024 === 0) reportProgress()
     if (nodes > nodeBudget || (nodes % 16 === 0 && performance.now() > deadline)) {
       throw new BudgetExceeded()
     }
@@ -130,7 +160,7 @@ export class DarkChessEngine {
           state.halfMoveClock, state.history, state.tokenAtSquare,
           state.chaseThreats, state.pendingChase, state.winner, state.draw]) : ''
     const cached = cacheable ? limits.resumeSubtrees?.get(cacheKey) : undefined
-    if (cached !== undefined) return cached
+    if (cached !== undefined) { cacheHits++; return cached }
     const saveExact = (value: number): number => {
       if (cacheable && Number.isFinite(value)) {
         limits.resumeSubtrees?.set(cacheKey, value)
@@ -178,7 +208,9 @@ export class DarkChessEngine {
         expected += count / total * (ownColor === Color.RED ? value : -value)
       }
       values[key] = expected
+      rootsDone++
       limits.onRootCompleted?.(move, expected)
+      reportProgress()
     }
     if (Object.keys(values).length !== available.length) {
       if (strict) throw new Error('Opening search incomplete: refusing to move')
@@ -187,6 +219,7 @@ export class DarkChessEngine {
     }
     let best = available[0]
     for (const move of available) if (values[moveKey(move)] > values[moveKey(best)]) best = move
+    reportProgress(true)
     return {move: best, depth: maxDepth, nodes,
       elapsedMs: performance.now() - startedAt, rootValues: values, value: values[moveKey(best)]}
   }
@@ -203,7 +236,9 @@ export class DarkChessEngine {
         ? rootValues[key] : branch(board, move, maxDepth, -Infinity, Infinity)
       if (!Number.isFinite(rootValues[key])) {
         rootValues[key] = score
+        rootsDone++
         limits.onRootCompleted?.(move, score)
+        reportProgress()
       }
       if ((board.turn === Color.RED && score > value) ||
           (board.turn === Color.BLACK && score < value)) {
@@ -211,6 +246,7 @@ export class DarkChessEngine {
       }
     }
     if (Object.keys(rootValues).length !== root.length) throw new Error('Full-depth root was not completed')
+    reportProgress(true)
     return {move: best, depth: maxDepth, nodes,
       elapsedMs: performance.now() - startedAt, rootValues, value}
   }
