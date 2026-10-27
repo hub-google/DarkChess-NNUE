@@ -51,8 +51,8 @@ function depthAllowed(actual: number, ply: number): boolean {
 }
 /** Sample only among equally strong, fully evaluated public-belief first flips. */
 function searchedOpening(board: Board, analysis: SearchAnalysis): Move {
-  if (board.ply !== 0 || board.turn !== Color.NONE || analysis.depth !== 1) {
-    throw new Error('The first flip must finish an exact depth-one search')
+  if (board.ply !== 0 || board.turn !== Color.NONE || analysis.depth !== targetDepth(0)) {
+    throw new Error('The first flip must finish its configured exact search depth')
   }
   const options = board.legalMoves()
   if (Object.keys(analysis.rootValues).length !== options.length) {
