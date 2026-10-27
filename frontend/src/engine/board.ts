@@ -109,7 +109,12 @@ export class Board {
     if (this.halfMoveClock === 0) return 1
     const current = this.snapshot()
     let count = 1
-    for (const entry of this.history) if (entry === current) count++
+    // Positions before the latest irreversible capture/flip cannot recur.
+    // halfMoveClock is the exact number of quiet moves since that event.
+    const earliest = Math.max(0, this.history.length - this.halfMoveClock)
+    for (let i = earliest; i < this.history.length; i++) {
+      if (this.history[i] === current) count++
+    }
     return count
   }
 
