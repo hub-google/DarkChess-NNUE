@@ -189,7 +189,7 @@ jobs:
           set -euo pipefail
           # Checkpoint-only waves are not model training data.
           if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
-            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "[HF Writer] Zero completed validated games; retained resume checkpoints, no HF upload."
             echo "uploaded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -377,7 +377,7 @@ jobs:
           set -euo pipefail
           # Checkpoint-only waves are not model training data.
           if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
-            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "[HF Writer] Zero completed validated games; retained resume checkpoints, no HF upload."
             echo "uploaded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -565,7 +565,7 @@ jobs:
           set -euo pipefail
           # Checkpoint-only waves are not model training data.
           if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
-            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "[HF Writer] Zero completed validated games; retained resume checkpoints, no HF upload."
             echo "uploaded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -753,7 +753,7 @@ jobs:
           set -euo pipefail
           # Checkpoint-only waves are not model training data.
           if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
-            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "[HF Writer] Zero completed validated games; retained resume checkpoints, no HF upload."
             echo "uploaded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -941,7 +941,7 @@ jobs:
           set -euo pipefail
           # Checkpoint-only waves are not model training data.
           if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
-            echo "[HF Writer] Zero completed depth-12 games; retained resume checkpoints, no HF upload."
+            echo "[HF Writer] Zero completed validated games; retained resume checkpoints, no HF upload."
             echo "uploaded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

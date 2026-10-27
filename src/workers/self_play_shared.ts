@@ -17,6 +17,11 @@ type Replay = {
   red_model?: string; black_model?: string
 }
 const VERSION = 'v2.1.0-perpetual-chase'
+// 1-based (row, column): (2,3), (2,6), (3,3), (3,6).
+// These four central cells are symmetry-related opening candidates;
+// no unmeasured win-rate advantage is claimed.
+const OPENING_SQUARES = [10, 13, 18, 21] as const
+const SEARCH_STRATEGY = 'fixed-opening-quick-first-ten-v1'
 const num = (key: string, defaultValue: number) => {
   const value = Number(process.env[key] ?? defaultValue)
   if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid ${key}=${value}`)
@@ -25,20 +30,39 @@ const num = (key: string, defaultValue: number) => {
 const encode = (move: Move) => move.from * 32 + move.to
 const nHidden = (board: Board) => board.remainingCounts.reduce((a, b) => a + b, 0)
 
-function limits(board: Board): SearchLimits {
-  // Production: exactly three plies for opening, twelve thereafter.
-  // There are NO node or per-move time budgets. Return a move only after
-  // the shared engine evaluates every root move to the requested depth.
-  // The explicit smoke override is only for small CI functional games.
-  // Production never defines SELF_PLAY_SMOKE_DEPTH.
+/** Search depth belongs to each actual move, counted from move 1. */
+function targetDepth(ply: number): number {
+  // Test-only override exercises an actual search for every move.
   const smoke = process.env.SELF_PLAY_SMOKE_DEPTH
-  const maxDepth = smoke === undefined ? (board.ply < 3 ? 3 : 12) :
-    Math.max(1, Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2)))
-  return {maxDepth, requireFullDepth: true}
+  if (smoke !== undefined) return Math.max(1, Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2)))
+  if (ply === 0) return 0 // First flip: random from four predetermined central squares.
+  if (ply < 10) return 1 // Moves 2–10: single-ply complete search; fast.
+  return 12 // Move 11 onward: complete twelve-ply search without time/node limits.
+}
+function limits(board: Board): SearchLimits {
+  // The fixed first flip does not invoke the engine. Other moves still require
+  // a fully finished depth, even when the opening depth is only one.
+  return {maxDepth: Math.max(1, targetDepth(board.ply)), requireFullDepth: true}
+}
+function depthAllowed(actual: number, ply: number): boolean {
+  // Restored older checkpoints can contain valid earlier moves searched DEEPER
+  // than the new minimum. Never discard a legal deep result as a fallback.
+  return Number.isInteger(actual) && actual >= targetDepth(ply)
+}
+function fixedOpening(board: Board): SearchAnalysis {
+  const eligible = board.legalMoves().filter(move =>
+    move.flip && OPENING_SQUARES.includes(move.from as (typeof OPENING_SQUARES)[number]))
+  if (board.ply !== 0 || board.turn !== Color.NONE || eligible.length !== OPENING_SQUARES.length) {
+    throw new Error('Fixed opening may only select one of the four legal central flips on an untouched board')
+  }
+  const move = eligible[Math.floor(Math.random() * eligible.length)]
+  // No search was conducted. Record the truth: zero depth, zero nodes,
+  // zero duration, no false search-policy targets.
+  return {move, depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0}
 }
 
 type Checkpoint = {
-  version: string; replay: Replay; rootValues: Record<number, number>; boardPly: number
+  version: string; strategy?: string; replay: Replay; rootValues: Record<number, number>; boardPly: number
 }
 const checkpointPath = () => join(process.env.RESUME_STATE_DIR ?? 'resume_state',
   `worker_${process.env.WORKER_ID ?? 'local'}.json`)
@@ -49,7 +73,7 @@ function restoreExactMemo(version: string): Map<string, number> {
   // A saved memo belongs exclusively to the model and referee deal in the
   // paired JSON checkpoint. No untrusted/historical model values are reused.
   const snapshot = JSON.parse(readFileSync(checkpointPath(), 'utf8')) as Checkpoint
-  if (snapshot.version !== version) return memo
+  if (snapshot.version !== version || snapshot.strategy !== SEARCH_STRATEGY) return memo
   for (const line of readFileSync(memoPath(), 'utf8').split('\n')) {
     if (!line.trim()) continue
     try {
@@ -66,15 +90,16 @@ function saveCheckpoint(version: string, replay: Replay, board: Board, rootValue
   const path = checkpointPath()
   mkdirSync(process.env.RESUME_STATE_DIR ?? 'resume_state', {recursive: true})
   const staging = path + '.tmp'
-  writeFileSync(staging, JSON.stringify({version, replay, rootValues, boardPly: board.ply} satisfies Checkpoint))
+  writeFileSync(staging, JSON.stringify({version, strategy: SEARCH_STRATEGY, replay, rootValues, boardPly: board.ply} satisfies Checkpoint))
   renameSync(staging, path)
 }
 function restoreCheckpoint(version: string): {board: Board; replay: Replay; rootValues: Record<number, number>} | null {
   const path = checkpointPath()
   if (!existsSync(path)) return null
   const snapshot = JSON.parse(readFileSync(path, 'utf8')) as Checkpoint
-  if (snapshot.version !== version || snapshot.replay?.ver !== VERSION) {
-    console.log('[Resume] Champion changed; previous search values cannot be reused.')
+  if (snapshot.version !== version || snapshot.replay?.ver !== VERSION ||
+      snapshot.strategy !== SEARCH_STRATEGY) {
+    console.log('[Resume] Champion or opening strategy changed; restart to avoid mixing search depths.')
     unlinkSync(path)
     if (existsSync(memoPath())) unlinkSync(memoPath())
     return null
@@ -167,25 +192,21 @@ function play(engine: DarkChessEngine, version: string): {
   let nodes = 0
   for (let ply = board.ply; ply < 512 && !board.isOver; ply++) {
     const side = board.turn
-    const targetDepth = limits(board).maxDepth!
-    const limitsForMove = {
+    const depth = targetDepth(board.ply)
+    const staticValue = engine.evaluate(board)
+    const analysis = depth === 0 ? fixedOpening(board) : engine.analyze(board, {
       ...limits(board),
       resumeRootValues: rootValues,
       resumeSubtrees: memo,
       onSubtreeCompleted: saveSubtree,
       onRootCompleted: (move: Move, value: number) => {
         rootValues[encode(move)] = value
-        // A completed root branch is durable before the next branch starts.
-        // This is the smallest safe interruption boundary; it is never
-        // mistaken for a fully calculated move.
         flushMemo()
         saveCheckpoint(version, record, board, rootValues)
       },
-    }
-    const staticValue = engine.evaluate(board)
-    const analysis = engine.analyze(board, limitsForMove)
-    if (!analysis.move || analysis.depth !== targetDepth) {
-      throw new Error(`Search incomplete at ply ${ply}: depth=${analysis.depth}, expected=${targetDepth}`)
+    })
+    if (!analysis.move || analysis.depth !== depth) {
+      throw new Error(`Search incomplete at ply ${ply}: depth=${analysis.depth}, expected=${depth}`)
     }
     const chosen = side === Color.NONE ? analysis.move : select(analysis, side, ply)
     const chosenValue = analysis.rootValues[encode(chosen)] ?? analysis.value
@@ -201,7 +222,7 @@ function play(engine: DarkChessEngine, version: string): {
     rootValues = {}
     flushMemo()
     saveCheckpoint(version, record, board, rootValues)
-    console.log(`[Deep Search] ply=${board.ply} COMPLETE depth=${analysis.depth} nodes=${analysis.nodes} ms=${Math.round(analysis.elapsedMs)}`)
+    console.log(`[${depth === 0 ? 'Fixed Opening' : depth === 1 ? 'Quick Search' : 'Deep Search'}] ply=${board.ply} COMPLETE depth=${analysis.depth} nodes=${analysis.nodes} ms=${Math.round(analysis.elapsedMs)} move=${encode(chosen)}`)
   }
   if (!board.isOver) throw new Error('Game unfinished: cannot upload')
   flushMemo()
@@ -209,11 +230,11 @@ function play(engine: DarkChessEngine, version: string): {
   record.res = board.draw ? 0 : board.winner === Color.RED ? 1 : -1
   if (board.draw) record.draw_reason = board.halfMoveClock >= 60 ? 'sixty_no_progress' : 'other'
   const searchedDepths = record.qd.slice(1)
-  const lateDepths = record.qd.filter((_, i) => i >= 3)
+  const lateDepths = record.qd.filter((_, i) => i >= 10)
   const depthAverage = searchedDepths.reduce((a, b) => a + b, 0) / Math.max(1, searchedDepths.length)
   const lateDepthAverage = lateDepths.reduce((a, b) => a + b, 0) / Math.max(1, lateDepths.length)
   return {replay: record, seconds: (performance.now() - started) / 1000,
-    totalNodes: nodes, depthAverage, fallback: record.qd.some((d, i) => d !== (process.env.SELF_PLAY_SMOKE_DEPTH === undefined ? (i < 3 ? 3 : 12) : Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2)))) ? 1 : 0,
+    totalNodes: nodes, depthAverage, fallback: record.qd.some((d, i) => !depthAllowed(d, i)) ? 1 : 0,
     lateDepthAverage, lateCount: lateDepths.length}
 }
 
@@ -223,12 +244,12 @@ function main() {
   const count = num('BATCH_SIZE', 10) * num('NUM_BATCHES', 1)
   const output = process.env.OUTPUT_DIR ?? 'output_data'
   mkdirSync(output, {recursive: true})
-  console.log(`[Shared Engine] ${version}; max search ${process.env.SEARCH_MAX_SECONDS ?? 'unlimited'}s, games=${count}`)
+  console.log(`[Shared Engine] ${version}; opening=fixed, moves 2-10=depth-1, moves 11+=depth-12; search-time=unlimited, games=${count}`)
   let saved = 0
   for (let i = 0; i < count; i++) {
     try {
       const game = play(engine, version)
-      const pass = game.fallback === 0 && game.replay.qd.every((d, ply) => d === (process.env.SELF_PLAY_SMOKE_DEPTH === undefined ? (ply < 3 ? 3 : 12) : Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2))))
+      const pass = game.fallback === 0 && game.replay.qd.every((d, ply) => depthAllowed(d, ply))
       console.log(`[Shared Engine] Game ${i + 1}: ply=${game.replay.ply} result=${game.replay.res} ` +
         `seconds=${game.seconds.toFixed(1)} nodes=${game.totalNodes} ` +
         `avg_completed_depth=${game.depthAverage.toFixed(2)} late_avg_depth=${game.lateDepthAverage.toFixed(2)} ` +

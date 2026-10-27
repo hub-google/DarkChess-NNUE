@@ -28,7 +28,13 @@ class SharedDecisionEngineProductionTests(unittest.TestCase):
         worker = (ROOT / "src/workers/self_play_shared.ts").read_text()
         engine = (ROOT / "frontend/src/engine/search.ts").read_text()
         workflow = (ROOT / ".github/workflows/self_play.yml").read_text()
-        self.assertIn("board.ply < 3 ? 3 : 12", worker)
+        self.assertIn("if (ply === 0) return 0", worker)
+        self.assertIn("if (ply < 10) return 1", worker)
+        self.assertIn("return 12 // Move 11 onward", worker)
+        self.assertIn("const OPENING_SQUARES = [10, 13, 18, 21]", worker)
+        self.assertIn("depthAllowed(d, ply)", worker)
+        self.assertIn("depth === 0 ? fixedOpening(board)", worker)
+        self.assertIn("strategy: SEARCH_STRATEGY", worker)
         self.assertIn("requireFullDepth: true", worker)
         self.assertIn("Complete-depth search must not have a node or time cutoff", engine)
         self.assertNotIn("SEARCH_MAX_SECONDS:", workflow)
@@ -40,12 +46,12 @@ class SharedDecisionEngineProductionTests(unittest.TestCase):
         worker = (ROOT / "src/workers/self_play_shared.ts").read_text()
         workflow = (ROOT / ".github/workflows/self_play.yml").read_text()
         for required in ("saveCheckpoint", "restoreCheckpoint", "onRootCompleted:",
-                         "resumeRootValues: rootValues", "analysis.depth !== targetDepth"):
+                         "resumeRootValues: rootValues", "analysis.depth !== depth"):
             self.assertIn(required, worker)
         self.assertEqual(workflow.count("接續前輪尚未完成的深度搜尋"), 5)
         self.assertEqual(workflow.count("resume_state/*.json"), 5)
         self.assertEqual(workflow.count("resume_state/*.memo"), 5)
-        self.assertEqual(workflow.count("depth-12 games; retained resume checkpoints"), 5)
+        self.assertEqual(workflow.count("validated games; retained resume checkpoints"), 5)
         self.assertIn("uploaded=true", workflow)
         self.assertIn("uploaded=false", workflow)
 
