@@ -17,12 +17,9 @@ type Replay = {
   red_model?: string; black_model?: string
 }
 const VERSION = 'v2.1.0-perpetual-chase'
-// 1-based (row, column): (2,3), (2,6), (3,3), (3,6).
-// These four central cells are symmetry-related opening candidates;
-// no unmeasured win-rate advantage is claimed.
-const OPENING_SQUARES = [10, 13, 18, 21] as const
-// Checkpoints must not mix results computed at different horizons.
-const SEARCH_STRATEGY = 'fixed-opening-quick-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '12') + '-v2'
+// A depth-one public-belief search chooses the very first flip as well.
+// Distinct checkpoint strategies must never reuse incompatible root values.
+const SEARCH_STRATEGY = 'searched-opening-first-ten-depth-' + (process.env.SELF_PLAY_TARGET_DEPTH ?? '12') + '-v3'
 const num = (key: string, defaultValue: number) => {
   const value = Number(process.env[key] ?? defaultValue)
   if (!Number.isFinite(value) || value < 0) throw new Error(`Invalid ${key}=${value}`)
@@ -36,8 +33,7 @@ function targetDepth(ply: number): number {
   // Test-only override exercises an actual search for every move.
   const smoke = process.env.SELF_PLAY_SMOKE_DEPTH
   if (smoke !== undefined) return Math.max(1, Math.floor(num('SELF_PLAY_SMOKE_DEPTH', 2)))
-  if (ply === 0) return 0 // First flip: random from four predetermined central squares.
-  if (ply < 10) return 1 // Moves 2–10: one-ply complete search.
+  if (ply < 10) return 1 // Moves 1–10: all searched exactly one ply.
   const depth = num('SELF_PLAY_TARGET_DEPTH', 12)
   if (![6, 8, 12].includes(depth) || !Number.isInteger(depth)) {
     throw new Error('SELF_PLAY_TARGET_DEPTH must be 6, 8 or 12')
@@ -45,8 +41,7 @@ function targetDepth(ply: number): number {
   return depth // Move 11 onward: complete selected horizon, no early fallback.
 }
 function limits(board: Board): SearchLimits {
-  // The fixed first flip does not invoke the engine. Other moves still require
-  // a fully finished depth, even when the opening depth is only one.
+  // Every action, including the opening, must complete its required depth.
   return {maxDepth: Math.max(1, targetDepth(board.ply)), requireFullDepth: true}
 }
 function depthAllowed(actual: number, ply: number): boolean {
@@ -54,16 +49,22 @@ function depthAllowed(actual: number, ply: number): boolean {
   // than the new minimum. Never discard a legal deep result as a fallback.
   return Number.isInteger(actual) && actual >= targetDepth(ply)
 }
-function fixedOpening(board: Board): SearchAnalysis {
-  const eligible = board.legalMoves().filter(move =>
-    move.flip && OPENING_SQUARES.includes(move.from as (typeof OPENING_SQUARES)[number]))
-  if (board.ply !== 0 || board.turn !== Color.NONE || eligible.length !== OPENING_SQUARES.length) {
-    throw new Error('Fixed opening may only select one of the four legal central flips on an untouched board')
+/** Sample only among equally strong, fully evaluated public-belief first flips. */
+function searchedOpening(board: Board, analysis: SearchAnalysis): Move {
+  if (board.ply !== 0 || board.turn !== Color.NONE || analysis.depth !== 1) {
+    throw new Error('The first flip must finish an exact depth-one search')
   }
-  const move = eligible[Math.floor(Math.random() * eligible.length)]
-  // No search was conducted. Record the truth: zero depth, zero nodes,
-  // zero duration, no false search-policy targets.
-  return {move, depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0}
+  const options = board.legalMoves()
+  if (Object.keys(analysis.rootValues).length !== options.length) {
+    throw new Error('First flip did not finish every legal root branch')
+  }
+  const bestValue = Math.max(...options.map(move => analysis.rootValues[encode(move)]))
+  if (!Number.isFinite(bestValue)) throw new Error('Invalid opening search values')
+  const tied = options.filter(move =>
+    Number.isFinite(analysis.rootValues[encode(move)]) &&
+    Math.abs(analysis.rootValues[encode(move)] - bestValue) <= 1e-9)
+  if (!tied.length) throw new Error('No fully evaluated best opening')
+  return tied[Math.floor(Math.random() * tied.length)]
 }
 
 type Checkpoint = {
@@ -199,7 +200,7 @@ function play(engine: DarkChessEngine, version: string): {
     const side = board.turn
     const depth = targetDepth(board.ply)
     const staticValue = engine.evaluate(board)
-    const analysis = depth === 0 ? fixedOpening(board) : engine.analyze(board, {
+    const analysis = engine.analyze(board, {
       ...limits(board),
       resumeRootValues: rootValues,
       resumeSubtrees: memo,
@@ -213,7 +214,7 @@ function play(engine: DarkChessEngine, version: string): {
     if (!analysis.move || analysis.depth !== depth) {
       throw new Error(`Search incomplete at ply ${ply}: depth=${analysis.depth}, expected=${depth}`)
     }
-    const chosen = side === Color.NONE ? analysis.move : select(analysis, side, ply)
+    const chosen = side === Color.NONE ? searchedOpening(board, analysis) : select(analysis, side, ply)
     const chosenValue = analysis.rootValues[encode(chosen)] ?? analysis.value
     record.mov.push(encode(chosen))
     record.q.push(chosenValue)
@@ -227,14 +228,14 @@ function play(engine: DarkChessEngine, version: string): {
     rootValues = {}
     flushMemo()
     saveCheckpoint(version, record, board, rootValues)
-    console.log(`[${depth === 0 ? 'Fixed Opening' : depth === 1 ? 'Quick Search' : 'Deep Search'}] ply=${board.ply} COMPLETE depth=${analysis.depth} nodes=${analysis.nodes} ms=${Math.round(analysis.elapsedMs)} move=${encode(chosen)}`)
+    console.log(`[${depth === 1 ? 'Quick Search' : 'Deep Search'}] ply=${board.ply} COMPLETE depth=${analysis.depth} nodes=${analysis.nodes} ms=${Math.round(analysis.elapsedMs)} move=${encode(chosen)}`)
   }
   if (!board.isOver) throw new Error('Game unfinished: cannot upload')
   flushMemo()
   record.ply = record.mov.length
   record.res = board.draw ? 0 : board.winner === Color.RED ? 1 : -1
   if (board.draw) record.draw_reason = board.halfMoveClock >= 60 ? 'sixty_no_progress' : 'other'
-  const searchedDepths = record.qd.slice(1)
+  const searchedDepths = record.qd
   const lateDepths = record.qd.filter((_, i) => i >= 10)
   const depthAverage = searchedDepths.reduce((a, b) => a + b, 0) / Math.max(1, searchedDepths.length)
   const lateDepthAverage = lateDepths.reduce((a, b) => a + b, 0) / Math.max(1, lateDepths.length)
@@ -244,24 +245,27 @@ function play(engine: DarkChessEngine, version: string): {
 }
 
 function validateOpening(): void {
-  if (targetDepth(0) !== 0 || targetDepth(1) !== 1 ||
+  if (targetDepth(0) !== 1 || targetDepth(1) !== 1 ||
       targetDepth(9) !== 1 || targetDepth(10) !== num('SELF_PLAY_TARGET_DEPTH', 12)) {
     throw new Error('Incorrect opening search depths')
   }
-  for (let sample = 0; sample < 128; sample++) {
+  const engine = new DarkChessEngine()
+  for (let sample = 0; sample < 32; sample++) {
     const board = new Board()
-    const analysis = fixedOpening(board)
-    if (!analysis.move ||
-        !OPENING_SQUARES.includes(analysis.move.from as (typeof OPENING_SQUARES)[number]) ||
-        analysis.move.to !== analysis.move.from || analysis.depth !== 0 ||
-        analysis.nodes !== 0 || analysis.elapsedMs !== 0 ||
-        Object.keys(analysis.rootValues).length !== 0) {
-      throw new Error('Fixed opening selected an invalid move or fabricated search results')
+    const analysis = engine.analyze(board, {maxDepth: 1, requireFullDepth: true})
+    const chosen = searchedOpening(board, analysis)
+    if (analysis.depth !== 1 || analysis.nodes <= 0 ||
+        Object.keys(analysis.rootValues).length !== board.legalMoves().length ||
+        chosen.to !== chosen.from || !chosen.flip ||
+        !board.legalMoves().some(move => encode(move) === encode(chosen)) ||
+        Math.abs(analysis.rootValues[encode(chosen)] - analysis.value) > 1e-9) {
+      throw new Error('First move did not search one full ply across all 32 flip positions')
     }
-    if (!board.play(analysis.move)) throw new Error('Fixed opening was illegal')
+    if (!board.play(chosen)) throw new Error('Depth-one searched first flip was illegal')
   }
-  console.log('[Opening Test] PASS: 128 legal fixed flips with zero search.')
+  console.log('[Opening Test] PASS: 32 fully searched depth-one public-belief first flips.')
 }
+
 function main() {
   if (process.env.SELF_PLAY_VALIDATE_OPENING === '1') {
     validateOpening()
@@ -272,7 +276,7 @@ function main() {
   const count = num('BATCH_SIZE', 10) * num('NUM_BATCHES', 1)
   const output = process.env.OUTPUT_DIR ?? 'output_data'
   mkdirSync(output, {recursive: true})
-  console.log(`[Shared Engine] ${version}; opening=fixed, moves 2-10=depth-1, moves 11+=depth-${targetDepth(10)}; search-time=unlimited, games=${count}`)
+  console.log(`[Shared Engine] ${version}; opening=depth-1, moves 1-10=depth-1, moves 11+=depth-${targetDepth(10)}; search-time=unlimited, games=${count}`)
   let saved = 0
   for (let i = 0; i < count; i++) {
     try {
