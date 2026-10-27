@@ -17,16 +17,16 @@ class WorkflowArchitectureTests(unittest.TestCase):
             {"self_play.yml", "train.yml", "deploy_pages.yml"},
         )
 
-    def test_five_waves_with_fifteen_workers_and_one_writer(self):
+    def test_single_run_with_fifteen_workers_and_one_writer(self):
         content = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
-        for wave in range(1, 6):
-            self.assertIn(f"  wave{wave}-workers:", content)
-            self.assertIn(f"  wave{wave}-upload:", content)
-        self.assertIn("max-parallel: 15", content)
-        self.assertEqual(content.count("第16號棋譜上傳員"), 5)
-        self.assertIn("self-play-v3", content)
-        self.assertIn("SEARCH_DEPTH=", content)
-        self.assertEqual(content.count("SEARCH_DEPTH="), 5)
+        self.assertEqual(content.count("  selfplay-workers:"), 1)
+        self.assertEqual(content.count("  upload:"), 1)
+        self.assertEqual(content.count("  continue-next-run:"), 1)
+        self.assertEqual(content.count("max-parallel: 15"), 1)
+        self.assertEqual(content.count("第16號棋譜上傳員"), 1)
+        self.assertIn("self-play-v4", content)
+        self.assertEqual(content.count("SEARCH_DEPTH="), 1)
+        self.assertIn("BUDGET=18000", content)
         self.assertIn("Production paused", content)
 
     def test_every_always_condition_checks_cancellation(self):

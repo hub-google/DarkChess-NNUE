@@ -4,11 +4,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 class SharedDecisionEngineProductionTests(unittest.TestCase):
-    def test_all_five_waves_use_same_node_engine(self):
+    def test_one_five_hour_run_uses_shared_node_engine(self):
         workflow = (ROOT / ".github/workflows/self_play.yml").read_text()
-        self.assertEqual(workflow.count("node .shared-build/src/workers/self_play_shared.js &"), 5)
+        self.assertEqual(workflow.count("node .shared-build/src/workers/self_play_shared.js &"), 1)
         self.assertNotIn("python -u src/workers/self_play.py &", workflow)
-        self.assertEqual(workflow.count("node-version: \"22\""), 5)
+        self.assertEqual(workflow.count("node-version: \"22\""), 1)
 
     def test_promotion_uses_shared_sprt_not_python_search(self):
         workflow = (ROOT / ".github/workflows/train.yml").read_text()
@@ -28,34 +28,34 @@ class SharedDecisionEngineProductionTests(unittest.TestCase):
         worker = (ROOT / "src/workers/self_play_shared.ts").read_text()
         engine = (ROOT / "frontend/src/engine/search.ts").read_text()
         workflow = (ROOT / ".github/workflows/self_play.yml").read_text()
-        self.assertIn("if (ply === 0) return 0", worker)
+        self.assertIn("if (ply < 10) return 1", worker)
         self.assertIn("if (ply < 10) return 1", worker)
         self.assertIn("return depth // Move 11 onward", worker)
         self.assertIn("SELF_PLAY_TARGET_DEPTH", worker)
         self.assertIn("Production paused until one CPU pilot completes a validated game.", workflow)
-        self.assertIn("const OPENING_SQUARES = [10, 13, 18, 21]", worker)
+        self.assertIn("function searchedOpening(", worker)
         self.assertIn("depthAllowed(d, ply)", worker)
-        self.assertIn("depth === 0 ? fixedOpening(board)", worker)
+        self.assertIn("const analysis = engine.analyze(board, {", worker)
         self.assertIn("strategy: SEARCH_STRATEGY", worker)
         self.assertIn("SELF_PLAY_VALIDATE_OPENING", worker)
-        self.assertIn("const analysis = fixedOpening(board)", worker)
+        self.assertIn("const analysis = engine.analyze(board, {maxDepth: 1, requireFullDepth: true})", worker)
         self.assertIn("requireFullDepth: true", worker)
         self.assertIn("Complete-depth search must not have a node or time cutoff", engine)
         self.assertNotIn("SEARCH_MAX_SECONDS:", workflow)
         self.assertNotIn("SEARCH_NODE_BUDGET_LATE:", workflow)
-        self.assertEqual(workflow.count("BUDGET=20400"), 5)
-        self.assertEqual(workflow.count("timeout-minutes: 345"), 5)
+        self.assertEqual(workflow.count("BUDGET=18000"), 1)
+        self.assertEqual(workflow.count("timeout-minutes: 345"), 1)
 
-    def test_resumes_saved_complete_root_branches_between_waves(self):
+    def test_resumes_saved_complete_root_branches_between_runs(self):
         worker = (ROOT / "src/workers/self_play_shared.ts").read_text()
         workflow = (ROOT / ".github/workflows/self_play.yml").read_text()
         for required in ("saveCheckpoint", "restoreCheckpoint", "onRootCompleted:",
                          "resumeRootValues: rootValues", "analysis.depth !== depth"):
             self.assertIn(required, worker)
-        self.assertEqual(workflow.count("接續前輪尚未完成的深度搜尋"), 5)
-        self.assertEqual(workflow.count("resume_state/*.json"), 5)
-        self.assertEqual(workflow.count("resume_state/*.memo"), 5)
-        self.assertEqual(workflow.count("validated games; retained resume checkpoints"), 5)
+        self.assertEqual(workflow.count("接續上一個 Run 的未完成搜尋"), 1)
+        self.assertEqual(workflow.count("resume_state/*.json"), 1)
+        self.assertEqual(workflow.count("resume_state/*.memo"), 1)
+        self.assertIn("validated games; retained resume checkpoints", workflow)
         self.assertIn("uploaded=true", workflow)
         self.assertIn("uploaded=false", workflow)
 

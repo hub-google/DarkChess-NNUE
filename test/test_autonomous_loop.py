@@ -13,35 +13,26 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
     def read(self, name):
         return (ROOT / name).read_text(encoding="utf-8")
 
-    def test_five_sequential_waves(self):
+    def test_one_run_fifteen_workers_for_five_hours_then_one_hf_writer(self):
         code = self.read("self_play.yml")
-        for wave in range(1, 6):
-            self.assertIn(f"  wave{wave}-workers:", code)
-            self.assertIn(f"  wave{wave}-upload:", code)
-            self.assertIn(f"needs: wave{wave}-workers", code)
-            if wave > 1:
-                self.assertIn(f"needs: wave{wave-1}-upload", code)
-        self.assertIn("needs: [wave1-upload, wave2-upload, wave3-upload, wave4-upload, wave5-upload]", code)
-        self.assertIn("gh workflow run self_play.yml", code)
-        self.assertIn('cron: "23 * * * *"', code)
-
-    def test_fifteen_cpu_one_hf_writer_per_wave_and_artifacts(self):
-        code = self.read("self_play.yml")
-        self.assertEqual(code.count("worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]"), 5)
-        self.assertEqual(code.count("max-parallel: 15"), 5)
-        self.assertEqual(code.count("BUDGET=20400"), 5)
-        self.assertEqual(code.count("timeout-minutes: 345"), 5)
-        self.assertEqual(code.count("timeout-minutes: 58"), 1)  # maintenance only
-        self.assertEqual(code.count("actions/upload-artifact@v4"), 10)
-        self.assertEqual(code.count("actions/download-artifact@v4"), 5)
-        self.assertEqual(code.count("merge-multiple: true"), 5)
-        self.assertEqual(code.count("name: 第"), 10)
-        for wave in range(1, 6):
-            writer = code.split(f"  wave{wave}-upload:")[1].split("\n  wave", 1)[0]
-            self.assertIn("HF", writer)
+        self.assertEqual(code.count("  selfplay-workers:"), 1)
+        self.assertEqual(code.count("  upload:"), 1)
+        self.assertEqual(code.count("  continue-next-run:"), 1)
+        self.assertNotIn("  wave2-workers:", code)
+        self.assertIn("needs: selfplay-workers", code)
+        self.assertIn("needs: upload", code)
+        self.assertIn("needs.upload.result == 'success'", code)
+        self.assertEqual(code.count("worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]"), 1)
+        self.assertEqual(code.count("max-parallel: 15"), 1)
+        self.assertEqual(code.count("BUDGET=18000"), 1)
+        self.assertEqual(code.count("timeout-minutes: 345"), 1)
+        self.assertEqual(code.count("timeout-minutes: 58"), 1)
+        self.assertEqual(code.count("actions/upload-artifact@v4"), 2)
+        self.assertEqual(code.count("actions/download-artifact@v4"), 1)
+        self.assertEqual(code.count("merge-multiple: true"), 1)
+        self.assertEqual(code.count("WORKER_ID: \"16\""), 1)
+        self.assertEqual(code.count("python -u src/workers/upload_batch.py"), 1)
         self.assertIn("group: darkchess-hf-stage-writer", code)
-        self.assertEqual(code.count('WORKER_ID: "16"'), 5)
-        self.assertEqual(code.count("python -u src/workers/upload_batch.py"), 5)
         self.assertIn("if: ${{ always() && !cancelled() }}", code)
 
     def test_daily_train_keeps_sprt(self):
@@ -58,14 +49,13 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn('LATEST_RESULT" = "cancelled"', code)
         self.assertIn("gh workflow run self_play.yml", code)
 
-    def test_training_handoff_after_fifth_wave(self):
+    def test_training_handoff_after_single_upload(self):
         code = self.read("self_play.yml")
-        self.assertIn("continue-next-cycle:", code)
-        self.assertIn("needs: [wave1-upload, wave2-upload, wave3-upload, wave4-upload, wave5-upload]", code)
-        self.assertIn("always() && !cancelled()", code)
+        self.assertIn("continue-next-run:", code)
+        self.assertIn("needs.upload.result == 'success'", code)
         self.assertIn("gh workflow run train.yml", code)
         self.assertIn("第16號棋譜上傳員", code)
-        self.assertIn("No completed validated games this round", code)
+        self.assertIn("No complete new games; saved checkpoints", code)
         self.assertIn("CURRENT_STATUS", code)
         self.assertIn("LAST_TRAIN=", code)
         self.assertIn("21600", code)
@@ -76,14 +66,15 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("git commit --allow-empty", code)
         self.assertIn("每月維持自動排程運作", code)
 
-    def test_failed_cpu_worker_does_not_block_subsequent_waves(self):
+    def test_failed_cpu_worker_cannot_suppress_single_writer(self):
         code = self.read("self_play.yml")
-        self.assertIn("group: self-play-v3-", code)
-        for wave in range(2, 6):
-            workers = code.split(f"  wave{wave}-workers:")[1].split("\n  wave", 1)[0]
-            self.assertIn("always()", workers)
-            self.assertIn("!cancelled()", workers)
+        self.assertIn("group: self-play-v4-", code)
+        self.assertIn("fail-fast: false", code)
+        self.assertIn("if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}", code)
         self.assertIn("trap stop_child INT TERM", code)
+        self.assertIn("selfplay-worker-", code)
+        self.assertIn("resume_state/*.json", code)
+        self.assertIn("resume_state/*.memo", code)
 
     def test_training_status_is_published_and_pages_redeployed(self):
         code = self.read("self_play.yml")
