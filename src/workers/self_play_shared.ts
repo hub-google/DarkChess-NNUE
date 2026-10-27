@@ -243,6 +243,11 @@ function play(engine: DarkChessEngine, version: string): {
     rootValues = {}
     flushMemo()
     saveCheckpoint(version, record, board, rootValues)
+    // Memoized exact subtrees belong to the previous position's search.
+    // Keeping them for hundreds of plies causes unbounded RAM/disk growth.
+    // Current step is already atomically checkpointed above.
+    memo.clear()
+    if (existsSync(memoPath())) unlinkSync(memoPath())
     console.log(`[${depth === 1 ? 'Quick Search' : 'Deep Search'}] ply=${board.ply} COMPLETE depth=${analysis.depth} nodes=${analysis.nodes} ms=${Math.round(analysis.elapsedMs)} move=${encode(chosen)}`)
   }
   if (!board.isOver) throw new Error('Game unfinished: cannot upload')
