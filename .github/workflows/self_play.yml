@@ -72,8 +72,9 @@ jobs:
           fi
           REF_DEPTH="$(gh api "repos/$REPO/contents/.github/production_depth.txt?ref=master" --jq '.content' | base64 -d | tr -d '\n')"
           if [ "$REF_DEPTH" != "6" ]; then echo "::error::Production depth is not 6"; exit 1; fi
-          if ! gh api "repos/$REPO/contents/.github/workflows/self_play.yml?ref=master" \
-             --jq '.content' | base64 -d | grep -q 'SELF_PLAY_CHANCE_SAMPLES: "3"'; then
+          gh api "repos/$REPO/contents/.github/workflows/self_play.yml?ref=master" \
+            --jq '.content' | base64 -d > /tmp/current-selfplay.yml
+          if ! grep -Fq 'SELF_PLAY_CHANCE_SAMPLES: "3"' /tmp/current-selfplay.yml; then
             echo "::error::Expected production six-ply sampled engine config not found."
             exit 1
           fi
