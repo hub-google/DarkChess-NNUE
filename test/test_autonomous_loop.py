@@ -65,7 +65,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("always() && !cancelled()", code)
         self.assertIn("gh workflow run train.yml", code)
         self.assertIn("第16號棋譜上傳員", code)
-        self.assertIn("No completed depth-12 games this round", code)
+        self.assertIn("No completed validated games this round", code)
         self.assertIn("CURRENT_STATUS", code)
         self.assertIn("LAST_TRAIN=", code)
         self.assertIn("21600", code)
