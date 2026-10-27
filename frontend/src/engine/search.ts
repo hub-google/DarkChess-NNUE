@@ -151,13 +151,16 @@ export class DarkChessEngine {
     if (state.isOver || depth <= 0) return evalPosition(state)
     // Only cache EXACT (full-window) expectiminimax subtrees.
     // A bound from a pruned alpha-beta window is NEVER safe to reuse.
-    // The key includes all PUBLIC rule/history/chase state used for future
-    // legality and NNUE; private face-down referee identities are excluded.
+    // Only reversible history matters for future repetitions: flips/captures
+    // permanently change the inventory. Preserve all separate chase state.
+    // Never include the private referee's hidden identities in cache keys.
     const cacheable = strict && depth >= 2 && depth <= 6 &&
       alpha === -Infinity && beta === Infinity
+    const recentHistory = cacheable && state.halfMoveClock > 0
+      ? state.history.slice(-state.halfMoveClock) : []
     const cacheKey = cacheable
       ? JSON.stringify([depth, state.grid, state.remainingCounts, state.turn,
-          state.halfMoveClock, state.history, state.tokenAtSquare,
+          state.halfMoveClock, recentHistory, state.tokenAtSquare,
           state.chaseThreats, state.pendingChase, state.winner, state.draw]) : ''
     const cached = cacheable ? limits.resumeSubtrees?.get(cacheKey) : undefined
     if (cached !== undefined) { cacheHits++; return cached }
