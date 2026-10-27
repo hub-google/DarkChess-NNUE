@@ -65,11 +65,17 @@ def recover():
                 name = a["name"]
                 retry = re.fullmatch(r"hf-upload-recovery-wave-(\d+)-(\d+)", name)
                 worker = re.fullmatch(r"selfplay-wave-(\d+)-worker-(\d+)-(\d+)", name)
+                single_retry = re.fullmatch(r"hf-upload-recovery-run-(\d+)", name)
+                single_worker = re.fullmatch(r"selfplay-worker-(\d+)-(\d+)", name)
                 legacy = re.fullmatch(r"self-play-recovery-\d+-\d+", name)
                 if retry and int(retry.group(2)) == run_id:
                     groups[f"wave-{retry.group(1)}"] = [a]
                 elif worker and int(worker.group(3)) == run_id:
                     sources_by_wave[worker.group(1)].append(a)
+                elif single_retry and int(single_retry.group(1)) == run_id:
+                    groups["run"] = [a]
+                elif single_worker and int(single_worker.group(2)) == run_id:
+                    sources_by_wave["run"].append(a)
                 elif legacy:
                     groups[f"legacy-{a['id']}"] = [a]
             # A worker may finish but the writer may be cancelled before creating
@@ -84,10 +90,12 @@ def recover():
                     )
                     if match and job.get("conclusion") == "success":
                         verified_waves.add(match.group(1))
+                    if "第16號棋譜上傳員" in job.get("name", "") and job.get("conclusion") == "success":
+                        verified_waves.add("run")
                 # Cancelled runs might never schedule the writer.
                 for wave, worker_artifacts in sources_by_wave.items():
                     if wave not in verified_waves:
-                        groups.setdefault(f"wave-{wave}", worker_artifacts)
+                        groups.setdefault("run" if wave == "run" else f"wave-{wave}", worker_artifacts)
 
             for key, parts in sorted(groups.items()):
                 if not parts:

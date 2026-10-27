@@ -88,6 +88,25 @@ class ActionRunPruningTests(unittest.TestCase):
             self.assertTrue(pruner.self_play_artifacts_safe(55, api))
         api.file_exists.assert_called()
 
+    def test_single_run_writer_success_allows_cleanup(self):
+        artifacts = [{"name": "selfplay-worker-5-55", "id": 5, "expired": False}]
+        jobs = [{"name": "第16號棋譜上傳員", "conclusion": "success"}]
+        with patch.object(pruner, "pages", side_effect=[artifacts, jobs]):
+            self.assertTrue(pruner.self_play_artifacts_safe(55))
+
+    def test_single_run_failed_writer_requires_recovery_receipt(self):
+        artifacts = [{"name": "selfplay-worker-5-55", "id": 5, "expired": False},
+                     {"name": "hf-upload-recovery-run-55", "id": 6, "expired": False}]
+        jobs = [{"name": "第16號棋譜上傳員", "conclusion": "failure"}]
+        with patch.object(pruner, "pages", side_effect=[artifacts, jobs]):
+            self.assertFalse(pruner.self_play_artifacts_safe(55))
+        api = MagicMock()
+        api.file_exists.return_value = True
+        with patch.object(pruner, "pages", side_effect=[artifacts, jobs]):
+            self.assertTrue(pruner.self_play_artifacts_safe(55, api))
+        api.file_exists.assert_called_with(repo_id=pruner.HF_DATASET, repo_type="dataset",
+                                            filename="receipts/recovery/55/run.json")
+
     def test_legacy_writer_name_is_supported(self):
         jobs = [{"name": "wave1 / Wave 1 / worker 16 HF writer", "conclusion": "success"}]
         with patch.object(pruner, "pages", return_value=jobs):

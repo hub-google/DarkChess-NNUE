@@ -93,6 +93,8 @@ def _writer_waves(run_id):
         match = re.search(r"(?:Wave\s+(\d+)\s*/\s*worker 16 HF writer|第(\d+)輪[／/]第16號棋譜上傳員)", job.get("name", ""), re.I)
         if match:
             verified.add(match.group(1) or match.group(2))
+        if "第16號棋譜上傳員" in job.get("name", ""):
+            verified.add("run")
     return verified
 
 
@@ -107,6 +109,12 @@ def self_play_artifacts_safe(run_id, hf_api=None):
         worker = re.fullmatch(rf"selfplay-wave-(\d+)-worker-\d+-{run_id}", name)
         rescue = re.fullmatch(rf"hf-upload-recovery-wave-(\d+)-{run_id}", name)
         legacy = re.fullmatch(r"self-play-recovery-\d+-\d+", name)
+        single_worker = re.fullmatch(rf"selfplay-worker-\d+-{run_id}", name)
+        single_rescue = re.fullmatch(rf"hf-upload-recovery-run-{run_id}", name)
+        if single_worker:
+            workers.add("run")
+        if single_rescue:
+            explicit_recovery.add("run")
         if worker:
             workers.add(worker.group(1))
         if rescue:
@@ -116,7 +124,7 @@ def self_play_artifacts_safe(run_id, hf_api=None):
     if not workers and not explicit_recovery:
         return True
     verified = _writer_waves(run_id) if workers else set()
-    unresolved = {f"wave-{w}" for w in workers if w not in verified} | explicit_recovery
+    unresolved = {("run" if w == "run" else f"wave-{w}") for w in workers if w not in verified} | explicit_recovery
     if not unresolved:
         return True
     if hf_api is None:
