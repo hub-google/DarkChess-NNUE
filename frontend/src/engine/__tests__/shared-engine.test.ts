@@ -59,6 +59,44 @@ describe('One shared decision engine for website and self-play', () => {
     expect(resumed.depth).toBe(4)
     expect(resumed.nodes).toBe(0)
   })
+  it('matches unbounded chance search on full-depth early/mid positions', () => {
+    const positions: Board[] = []
+    for (let variant = 0; variant < 4; variant++) {
+      const b = new Board(false)
+      b.grid.fill(Piece.EMPTY)
+      b.remainingCounts.fill(0)
+      b.turn = variant % 2 ? Color.BLACK : Color.RED
+      b.grid[0] = Piece.RED_ROOK
+      b.grid[31] = Piece.BLK_ROOK
+      b.grid[variant + 1] = Piece.HIDDEN
+      b.grid[24 - variant] = Piece.HIDDEN
+      b.hidden[variant + 1] = Piece.RED_PAWN
+      b.hidden[24 - variant] = Piece.BLK_PAWN
+      b.remainingCounts[6] = 1
+      b.remainingCounts[13] = 1
+      positions.push(b)
+    }
+    for (const board of positions) {
+      const engine = new DarkChessEngine()
+      const reference = engine.analyze(board, {
+        maxDepth: 4, requireFullDepth: true, useChanceBounds: false,
+      })
+      const progress: SearchProgress[] = []
+      const optimized = engine.analyze(board, {
+        maxDepth: 4, requireFullDepth: true, useChanceBounds: true,
+        onProgress: p => progress.push(p),
+      })
+      expect(optimized.depth).toBe(4)
+      expect(optimized.move).toEqual(reference.move)
+      expect(Object.keys(optimized.rootValues)).toEqual(Object.keys(reference.rootValues))
+      for (const key of Object.keys(reference.rootValues)) {
+        expect(optimized.rootValues[Number(key)]).toBeCloseTo(reference.rootValues[Number(key)], 9)
+      }
+      expect(optimized.nodes).toBeLessThanOrEqual(reference.nodes)
+      expect(progress.at(-1)?.chancePrunes).toBeGreaterThanOrEqual(0)
+    }
+  })
+
   it('reports complete search depth rather than requested depth', () => {
     const b = new Board(false)
     b.play({from: 0, to: 0, flip: true})
