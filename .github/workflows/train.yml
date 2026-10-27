@@ -98,6 +98,45 @@ jobs:
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master --field continuous=true
           echo "正式新版對弈已派送。"
 
+  depth-pilot:
+    name: 單運算員深度試跑
+    needs: python-regression
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[深度試跑]') && needs.python-regression.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 準備 CPU 運算環境
+        run: |
+          pip install numpy numba
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 先試八層完整對弈，再試六層
+        shell: bash
+        run: |
+          set +e
+          for D in 8 6; do
+            mkdir -p "state_$D" "output_$D"
+            timeout 2400s env SELF_PLAY_TARGET_DEPTH="$D" WORKER_ID=pilot \
+              RESUME_STATE_DIR="state_$D" OUTPUT_DIR="output_$D" \
+              BATCH_SIZE=1 NUM_BATCHES=1 \
+              node .shared-build/src/workers/self_play_shared.js
+            python -u src/training/validate_replay.py --directory "output_$D" --min-games 1
+            if [ "$?" = "0" ]; then
+              echo "FULL_GAME_DEPTH=$D" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          exit 1
+
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
     # Ordinary source pushes execute only regression CI.
