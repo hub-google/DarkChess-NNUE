@@ -66,6 +66,7 @@ jobs:
           npm run build
           cd ..
           ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+          SELF_PLAY_VALIDATE_OPENING=1 node .shared-build/src/workers/self_play_shared.js
           BATCH_SIZE=1 NUM_BATCHES=1 SELF_PLAY_SMOKE_DEPTH=2 timeout 480s node .shared-build/src/workers/self_play_shared.js
           python -u src/training/validate_replay.py --directory output_data --min-games 1
           python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
@@ -77,6 +78,21 @@ jobs:
           assert 0 <= report["score_rate"] <= 1
           assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
           PY
+      - name: 結束舊版自動對弈並啟用新開局規則
+        if: ${{ contains(github.event.head_commit.message, '[切換新開局]') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OLD_RUN=40341312217
+          STATUS="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status' || true)"
+          if [ "$STATUS" != "completed" ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN/cancel"
+            echo "已要求結束舊版自動對弈：$OLD_RUN"
+          fi
+          gh workflow run self_play.yml --ref master --field continuous=true
+          echo "已派送使用新版規則的自動對弈。"
+
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
     # Ordinary source pushes execute only regression CI.

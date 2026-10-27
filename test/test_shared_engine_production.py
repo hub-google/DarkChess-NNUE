@@ -35,6 +35,8 @@ class SharedDecisionEngineProductionTests(unittest.TestCase):
         self.assertIn("depthAllowed(d, ply)", worker)
         self.assertIn("depth === 0 ? fixedOpening(board)", worker)
         self.assertIn("strategy: SEARCH_STRATEGY", worker)
+        self.assertIn("SELF_PLAY_VALIDATE_OPENING", worker)
+        self.assertIn("const analysis = fixedOpening(board)", worker)
         self.assertIn("requireFullDepth: true", worker)
         self.assertIn("Complete-depth search must not have a node or time cutoff", engine)
         self.assertNotIn("SEARCH_MAX_SECONDS:", workflow)

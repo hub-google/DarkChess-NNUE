@@ -238,7 +238,30 @@ function play(engine: DarkChessEngine, version: string): {
     lateDepthAverage, lateCount: lateDepths.length}
 }
 
+function validateOpening(): void {
+  if (targetDepth(0) !== 0 || targetDepth(1) !== 1 ||
+      targetDepth(9) !== 1 || targetDepth(10) !== 12) {
+    throw new Error('Incorrect opening search depths')
+  }
+  for (let sample = 0; sample < 128; sample++) {
+    const board = new Board()
+    const analysis = fixedOpening(board)
+    if (!analysis.move ||
+        !OPENING_SQUARES.includes(analysis.move.from as (typeof OPENING_SQUARES)[number]) ||
+        analysis.move.to !== analysis.move.from || analysis.depth !== 0 ||
+        analysis.nodes !== 0 || analysis.elapsedMs !== 0 ||
+        Object.keys(analysis.rootValues).length !== 0) {
+      throw new Error('Fixed opening selected an invalid move or fabricated search results')
+    }
+    if (!board.play(analysis.move)) throw new Error('Fixed opening was illegal')
+  }
+  console.log('[Opening Test] PASS: 128 legal fixed flips with zero search.')
+}
 function main() {
+  if (process.env.SELF_PLAY_VALIDATE_OPENING === '1') {
+    validateOpening()
+    return
+  }
   const { model, version } = loadNNUE()
   const engine = new DarkChessEngine(board => model.evaluate(board))
   const count = num('BATCH_SIZE', 10) * num('NUM_BATCHES', 1)
