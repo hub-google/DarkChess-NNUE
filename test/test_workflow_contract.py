@@ -27,6 +27,7 @@ class WorkflowArchitectureTests(unittest.TestCase):
         self.assertIn("self-play-v4", content)
         self.assertEqual(content.count("SEARCH_DEPTH="), 1)
         self.assertIn("BUDGET=18000", content)
+        self.assertIn("needs.upload.result == 'success'", content)
         self.assertIn("Production paused", content)
 
     def test_every_always_condition_checks_cancellation(self):
