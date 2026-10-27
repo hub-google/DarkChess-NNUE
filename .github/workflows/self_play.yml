@@ -118,7 +118,7 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
-          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          SEARCH_DEPTH="$(cat .github/production_depth.txt)"
           case "$SEARCH_DEPTH" in
             6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
             *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
@@ -311,7 +311,7 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
-          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          SEARCH_DEPTH="$(cat .github/production_depth.txt)"
           case "$SEARCH_DEPTH" in
             6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
             *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
@@ -504,7 +504,7 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
-          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          SEARCH_DEPTH="$(cat .github/production_depth.txt)"
           case "$SEARCH_DEPTH" in
             6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
             *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
@@ -697,7 +697,7 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
-          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          SEARCH_DEPTH="$(cat .github/production_depth.txt)"
           case "$SEARCH_DEPTH" in
             6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
             *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
@@ -890,7 +890,7 @@ jobs:
             exit 130
           }
           trap stop_child INT TERM
-          SEARCH_DEPTH="$(tr -d '\\r\\n' < .github/production_depth.txt)"
+          SEARCH_DEPTH="$(cat .github/production_depth.txt)"
           case "$SEARCH_DEPTH" in
             6|8) export SELF_PLAY_TARGET_DEPTH="$SEARCH_DEPTH" ;;
             *) echo "::error::Production paused until one CPU pilot completes a validated game."; exit 1 ;;
@@ -1052,14 +1052,15 @@ jobs:
           set -euo pipefail
           # Manual cancellation means PAUSED, until the user dispatches a round.
           # This persists without a separate repository variable or workflow.
-          RECENT=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=1")
+          if [ ! -f .github/production_depth.txt ] || ! grep -Eq '^(6|8)
           LATEST_STATUS=$(jq -r '.workflow_runs[0].status // ""' <<< "$RECENT")
           LATEST_RESULT=$(jq -r '.workflow_runs[0].conclusion // ""' <<< "$RECENT")
           if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" = "cancelled" ]; then
             echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
             exit 0
           fi
-          if [ ! -f .github/production_depth.txt ] || ! grep -Eq '^(6|8)            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
+          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
           if [ "$ACTIVE" -gt 0 ]; then
             echo "[Watchdog] $ACTIVE round(s) already active; no duplicate dispatch."
             exit 0
@@ -1160,6 +1161,13 @@ jobs:
           exit 1
  .github/production_depth.txt; then
             echo "[Watchdog] Production paused: one-worker depth pilot has not passed."
+            exit 0
+          fi
+          RECENT=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=1")
+          LATEST_STATUS=$(jq -r '.workflow_runs[0].status // ""' <<< "$RECENT")
+          LATEST_RESULT=$(jq -r '.workflow_runs[0].conclusion // ""' <<< "$RECENT")
+          if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" = "cancelled" ]; then
+            echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
             exit 0
           fi
           ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
