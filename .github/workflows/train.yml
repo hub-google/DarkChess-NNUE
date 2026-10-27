@@ -150,40 +150,33 @@ jobs:
           pip install numpy numba
           npm ci --prefix frontend
           ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-      - name: 先試八層完整對弈，再試六層
+      - name: 只驗證六層完整棋譜與搜尋進度
         shell: bash
         run: |
-          set +e
-          for D in 8 6; do
-            mkdir -p "state_$D" "output_$D"
-            timeout 2400s env SELF_PLAY_TARGET_DEPTH="$D" WORKER_ID=pilot \
-              RESUME_STATE_DIR="state_$D" OUTPUT_DIR="output_$D" \
-              BATCH_SIZE=1 NUM_BATCHES=1 \
-              node .shared-build/src/workers/self_play_shared.js
-            python -u src/training/validate_replay.py --directory "output_$D" --min-games 1
-            if [ "$?" = "0" ]; then
-              echo "FULL_GAME_DEPTH=$D" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-          done
-          exit 1
-      - name: 試跑成功後才寫入正式深度並啟動十五人
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
           set -euo pipefail
-          DEPTH="$(grep -oE 'FULL_GAME_DEPTH=[68]' "$GITHUB_STEP_SUMMARY" | tail -1 | cut -d= -f2)"
-          test "$DEPTH" = 8 -o "$DEPTH" = 6
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin master
-          git checkout -B proven-cpu-depth origin/master
-          printf "%s\n" "$DEPTH" > .github/production_depth.txt
-          git add .github/production_depth.txt
-          git commit -m "chore: enable verified CPU depth $DEPTH"
-          git push origin HEAD:master
-          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "單 CPU 完整棋局驗證通過，正式採用 $DEPTH 層。"
+          test "$(cat .github/production_depth.txt)" = "6"
+          mkdir -p state_6 output_6
+          set +e
+          timeout 2400s env SELF_PLAY_TARGET_DEPTH=6 WORKER_ID=pilot \
+            RESUME_STATE_DIR=state_6 OUTPUT_DIR=output_6 \
+            BATCH_SIZE=1 NUM_BATCHES=1 \
+            node .shared-build/src/workers/self_play_shared.js
+          RESULT=$?
+          set -e
+          echo "CPU pilot exit code: $RESULT" >> "$GITHUB_STEP_SUMMARY"
+          python -u src/training/validate_replay.py --directory output_6 --min-games 1
+          echo "Verified complete six-ply game: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: 保存六層試跑棋譜與斷點
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: six-ply-cpu-pilot-${{ github.run_id }}
+          path: |
+            state_6/*.json
+            state_6/*.memo
+            output_6/*.jsonl.gz
+          if-no-files-found: warn
+          retention-days: 7
 
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
