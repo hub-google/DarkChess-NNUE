@@ -27,6 +27,24 @@ export const typeOf = (p: Piece) => p > 7 ? p - 8 : p - 1
 const adjacent = (a: number, b: number) =>
   (Math.floor(a / 8) === Math.floor(b / 8) && Math.abs(a - b) === 1) || Math.abs(a - b) === 8
 
+// Precomputed destination geometry avoids constructing/sorting candidate lists
+// at millions of speculative nodes during exact-depth CPU self-play.
+const NEIGHBOR_TARGETS: number[][] = []
+const CANNON_TARGETS: number[][] = []
+for (let from = 0; from < 32; from++) {
+  const row = Math.floor(from / 8), col = from % 8
+  const near: number[] = []
+  if (row > 0) near.push(from - 8)
+  if (row < 3) near.push(from + 8)
+  if (col > 0) near.push(from - 1)
+  if (col < 7) near.push(from + 1)
+  NEIGHBOR_TARGETS.push(near.sort((a, b) => a - b))
+  const all = new Set(near)
+  for (let c = 0; c < 8; c++) if (c !== col) all.add(row * 8 + c)
+  for (let r = 0; r < 4; r++) if (r !== row) all.add(r * 8 + col)
+  CANNON_TARGETS.push([...all].sort((a, b) => a - b))
+}
+
 export class Board {
   public grid: Piece[]
   public hidden: Piece[]
@@ -86,35 +104,22 @@ export class Board {
 
   repetitionCount() {
     const current = this.snapshot()
-    return 1 + this.history.filter(snapshot => snapshot === current).length
+    let count = 1
+    for (const entry of this.history) if (entry === current) count++
+    return count
   }
 
   legalMoves(color = this.turn): Move[] {
     if (this.isOver) return []
-    const moves: Move[] = this.grid.flatMap((p, i) => p === Piece.HIDDEN ? [{ from: i, to: i, flip: true }] : [])
+    const moves: Move[] = []
+    for (let square = 0; square < 32; square++) {
+      if (this.grid[square] === Piece.HIDDEN) moves.push({from: square, to: square, flip: true})
+    }
     if (color === Color.NONE) return moves
     for (let from = 0; from < 32; from++) {
       if (colorOf(this.grid[from]) !== color) continue
-      // Neighbor moves for every piece; cannons can additionally capture along
-      // a row or column. Keep original ascending destination ordering.
-      const row = Math.floor(from / 8), col = from % 8
-      const candidates: number[] = []
-      if (row > 0) candidates.push(from - 8)
-      if (row < 3) candidates.push(from + 8)
-      if (col > 0) candidates.push(from - 1)
-      if (col < 7) candidates.push(from + 1)
-      if (typeOf(this.grid[from]) === 5) {
-        for (let c = 0; c < 8; c++) {
-          const to = row * 8 + c
-          if (c !== col && !candidates.includes(to)) candidates.push(to)
-        }
-        for (let r = 0; r < 4; r++) {
-          const to = r * 8 + col
-          if (r !== row && !candidates.includes(to)) candidates.push(to)
-        }
-      }
-      candidates.sort((a, b) => a - b)
-      for (const to of candidates) if (this.canMove(from, to)) moves.push({ from, to })
+      const candidates = typeOf(this.grid[from]) === 5 ? CANNON_TARGETS[from] : NEIGHBOR_TARGETS[from]
+      for (const to of candidates) if (this.canMove(from, to)) moves.push({from, to})
     }
     return moves
   }
