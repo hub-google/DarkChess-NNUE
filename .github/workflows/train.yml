@@ -127,7 +127,7 @@ jobs:
           echo "正式 NNUE CPU 自我對弈已派送，15 名運算員。"
 
   six-ply-profile:
-    name: 六層搜尋效能量測
+    name: 六層選擇性搜尋效能試驗
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[六層量測]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -154,7 +154,7 @@ jobs:
           # Explicitly disable the runner's inherited bash -e for timeout.
           set +e
           timeout --signal=TERM --kill-after=5s 135s env \
-            SELF_PLAY_TARGET_DEPTH=6 WORKER_ID=profile \
+            SELF_PLAY_TARGET_DEPTH=6 SELF_PLAY_INNER_MOVE_LIMIT=2 WORKER_ID=profile \
             RESUME_STATE_DIR=profile_state OUTPUT_DIR=profile_output \
             BATCH_SIZE=1 NUM_BATCHES=1 \
             node .shared-build/src/workers/self_play_shared.js 2>&1 | tee six-ply-profile.log
