@@ -150,12 +150,16 @@ jobs:
           set -uo pipefail
           test "$(cat .github/production_depth.txt)" = "6"
           mkdir -p profile_state profile_output
+          # A completed 135-second profiling window is not an engine failure.
+          # Explicitly disable the runner's inherited bash -e for timeout.
+          set +e
           timeout --signal=TERM --kill-after=5s 135s env \
             SELF_PLAY_TARGET_DEPTH=6 WORKER_ID=profile \
             RESUME_STATE_DIR=profile_state OUTPUT_DIR=profile_output \
             BATCH_SIZE=1 NUM_BATCHES=1 \
             node .shared-build/src/workers/self_play_shared.js 2>&1 | tee six-ply-profile.log
           RESULT=${PIPESTATUS[0]}
+          set -e
           echo "### 六層 CPU 搜尋量測" >> "$GITHUB_STEP_SUMMARY"
           echo "Exit code: $RESULT (124 means expected profiling timeout)" >> "$GITHUB_STEP_SUMMARY"
           echo '~~~' >> "$GITHUB_STEP_SUMMARY"
@@ -167,6 +171,9 @@ jobs:
           fi
           if ! grep -Fq '[Search Progress]' six-ply-profile.log; then
             echo "::warning::Worker did not reach a 30-second six-ply progress sample; inspect earlier plies."
+          fi
+          if ! grep -Fq '[Root Complete]' six-ply-profile.log; then
+            echo "::warning::No complete six-ply root move was produced during profiling."
           fi
       - name: 保存六層效能紀錄
         if: ${{ always() && !cancelled() }}
