@@ -67,6 +67,45 @@ function selectInteriorMoves(board: Board, ranked: Move[], requested: number): M
   return chosen
 }
 
+/**
+ * Public-information stratified sampling of reveal identities for optional
+ * CPU training. This is an approximation, never labelled exact expectiminimax.
+ * Full chance enumeration remains the default for the browser and reference CI.
+ */
+function chanceOutcomes(board: Board, move: Move, depth: number, samples?: number):
+    {index: number; probability: number}[] {
+  const total = board.remainingCounts.reduce((a, b) => a + b, 0)
+  const nonzero = board.remainingCounts.filter(x => x > 0).length
+  if (!samples || samples >= nonzero) {
+    return board.remainingCounts.flatMap((count, index) =>
+      count > 0 ? [{index, probability: count / total}] : [])
+  }
+  // Fixed-offset systematic sampling gives an unbiased estimate under a
+  // uniform offset, using only the public position and no actual hidden piece.
+  let hash = 2166136261
+  for (let i = 0; i < 32; i++) {
+    hash = Math.imul(hash ^ (board.grid[i] + 17 * (i + 1)), 16777619)
+  }
+  for (let i = 0; i < 14; i++) {
+    hash = Math.imul(hash ^ (board.remainingCounts[i] + 31 * i), 16777619)
+  }
+  hash = Math.imul(hash ^ (move.from + depth * 37 + board.ply), 16777619)
+  const shift = (hash >>> 0) / 4294967296
+  const accum = new Map<number, number>()
+  for (let sample = 0; sample < samples; sample++) {
+    const target = (sample + shift) * total / samples
+    let sum = 0
+    for (let index = 0; index < 14; index++) {
+      sum += board.remainingCounts[index]
+      if (sum > target) {
+        accum.set(index, (accum.get(index) ?? 0) + 1 / samples)
+        break
+      }
+    }
+  }
+  return [...accum].map(([index, probability]) => ({index, probability}))
+}
+
 class BudgetExceeded extends Error {}
 
 /** Periodic, read-only statistics; does not change exact search results. */
@@ -86,6 +125,8 @@ export type SearchLimits = {
   useChanceBounds?: boolean
   /** Experimental: root remains exhaustive; cap only interior move width. */
   innerMoveLimit?: number
+  /** Optional approximate chance enumeration (public belief, no hidden oracle). */
+  chanceSamples?: number
   onProgress?: (progress: SearchProgress) => void
   progressIntervalMs?: number
   maxDepth?: number
@@ -168,12 +209,10 @@ export class DarkChessEngine {
     }
     const total = state.remainingCounts.reduce((a, b) => a + b, 0)
     if (!total) throw new Error('chance node without remaining hidden pieces')
+    const outcomes = chanceOutcomes(state, move, depth, limits.chanceSamples)
     let expected = 0
     let seen = 0
-    for (let index = 0; index < 14; index++) {
-      const count = state.remainingCounts[index]
-      if (count <= 0) continue
-      const probability = count / total
+    for (const {index, probability} of outcomes) {
       // All terminal and NNUE evaluations are bounded to [-1, 1].
       // After this outcome, later unobserved outcomes weigh at most
       // +/- remaining. Derive a provably safe child alpha/beta window:
