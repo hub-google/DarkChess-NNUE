@@ -34,6 +34,18 @@ jobs:
       actions: write
     steps:
       - uses: actions/checkout@v4
+      - name: 先停止耗時的十二層舊對弈
+        if: ${{ contains(github.event.head_commit.message, '[停止12層]') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUN=40434371140
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '.status' || true)
+          if [ "$STATUS" != "completed" ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/cancel"
+            echo "已要求停止舊版十二層運算：$RUN"
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
