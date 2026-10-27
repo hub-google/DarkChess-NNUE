@@ -1,5 +1,5 @@
 name: 自動對弈與中斷接續
-run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' || github.event.schedule == '23 * * * *' && '每小時恢復檢查' || github.event.schedule == '17 */3 * * *' && '棋譜修復與統計' || github.event.schedule == '43 3 1 * *' && '每月排程維護' || '立即切換新版六層' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' || github.event.schedule == '23 * * * *' && '每小時恢復檢查' || github.event.schedule == '17 */3 * * *' && '棋譜修復與統計' || github.event.schedule == '43 3 1 * *' && '每月排程維護' || '自動對弈系統' }}
 
 # Exactly three visible active workflows; ALL games use shared DarkChessEngine:
 # 1. This file: one five-hour CPU matrix + HF upload + next run + recovery
@@ -8,10 +8,6 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' |
 # Cancellation: ALWAYS guard downstream work with !cancelled().
 # The scheduler must not restart after the most recent round was cancelled.
 on:
-  push:
-    branches: [master]
-    paths:
-      - ".github/switch-to-sixply.trigger"
   workflow_dispatch:
     inputs:
       continuous:
@@ -33,56 +29,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  switch-to-new-version:
-    name: 停止舊版並立即啟動新版
-    if: ${{ github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - name: 確認新版設定、取消舊 Run 並派送最新對弈
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          REPO="$GITHUB_REPOSITORY"
-          OLD_RUN=40447077061
-          OLD_STATUS="$(gh api "repos/$REPO/actions/runs/$OLD_RUN" --jq '.status')"
-          echo "Old #$OLD_RUN initial status: $OLD_STATUS"
-          if [ "$OLD_STATUS" != "completed" ]; then
-            echo "::notice::Cancelling old 15-worker run #$OLD_RUN"
-            gh api --method POST "repos/$REPO/actions/runs/$OLD_RUN/cancel" || true
-            for RETRY in $(seq 1 90); do
-              sleep 4
-              OLD_STATUS="$(gh api "repos/$REPO/actions/runs/$OLD_RUN" --jq '.status')"
-              [ "$OLD_STATUS" = "completed" ] && break
-              if [ "$RETRY" -eq 30 ] || [ "$RETRY" -eq 60 ]; then
-                gh api --method POST "repos/$REPO/actions/runs/$OLD_RUN/force-cancel" || true
-              fi
-            done
-          fi
-          if [ "$OLD_STATUS" != "completed" ]; then
-            echo "::error::Old run is still active. Not launching concurrent workers."
-            exit 1
-          fi
-          echo "Old run finished: $(gh api "repos/$REPO/actions/runs/$OLD_RUN" --jq '.conclusion')"
-          ACTIVE="$(gh api "repos/$REPO/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=50" --jq '[.workflow_runs[] | select(.status != "completed")] | length')"
-          if [ "$ACTIVE" -gt 0 ]; then
-            echo "::notice::$ACTIVE newer self-play runs are already active; no duplicate."
-            exit 0
-          fi
-          REF_DEPTH="$(gh api "repos/$REPO/contents/.github/production_depth.txt?ref=master" --jq '.content' | base64 -d | tr -d '\n')"
-          if [ "$REF_DEPTH" != "6" ]; then echo "::error::Production depth is not 6"; exit 1; fi
-          gh api "repos/$REPO/contents/.github/workflows/self_play.yml?ref=master" \
-            --jq '.content' | base64 -d > /tmp/current-selfplay.yml
-          if ! grep -Fq 'SELF_PLAY_CHANCE_SAMPLES: "3"' /tmp/current-selfplay.yml; then
-            echo "::error::Expected production six-ply sampled engine config not found."
-            exit 1
-          fi
-          gh workflow run self_play.yml --repo "$REPO" --ref master --field continuous=true
-          echo "[Switch] NEW six-ply 15-worker self-play dispatched from latest master."
-          echo "OLD_RUN=$OLD_RUN" >> "$GITHUB_STEP_SUMMARY"
-          echo "DEPTH=6 INNER_WIDTH=2 CHANCE_SAMPLES=3" >> "$GITHUB_STEP_SUMMARY"
-
   selfplay-workers:
     name: 對弈運算員 ${{ matrix.worker_id }}
     if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
