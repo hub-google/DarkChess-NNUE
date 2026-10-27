@@ -93,6 +93,10 @@ jobs:
           SELF_PLAY_TEMPERATURE: "0.20"
           EXPLORE_PLIES: "12"
           EXPLORE_VALUE_MARGIN: "0.04"
+          # Proven on a legal 168-ply six-depth replay: CPU-selective, explicitly
+          # tagged as approximate rather than exhaustive expectiminimax.
+          SELF_PLAY_INNER_MOVE_LIMIT: "2"
+          SELF_PLAY_CHANCE_SAMPLES: "3"
         run: |
           set -euo pipefail
           mkdir -p output_data
