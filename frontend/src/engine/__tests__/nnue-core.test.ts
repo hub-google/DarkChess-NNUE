@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Board, type Piece } from '../board'
+import { Board } from '../board'
 import { BrowserNNUE, extractFeatures } from '../nnue-core'
 
 function referenceEval(model: {
