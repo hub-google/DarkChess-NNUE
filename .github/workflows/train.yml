@@ -101,6 +101,23 @@ jobs:
             6|8) echo "啟動正式 NNUE CPU 自我對弈，完整搜尋深度 $CURRENT_DEPTH" ;;
             *) echo "::error::Invalid production depth: $CURRENT_DEPTH"; exit 1 ;;
           esac
+          if [ "${{ contains(github.event.head_commit.message, '[切換單輪]') }}" = "true" ]; then
+            OLD_RUN=40443703219
+            OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
+            if [ "$OLD_STATUS" != "completed" ]; then
+              echo "停止仍使用舊五輪規則的 Run $OLD_RUN。"
+              gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN/cancel"
+              for TRY in 1 2 3 4 5 6 7 8 9 10 11 12; do
+                sleep 5
+                OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
+                [ "$OLD_STATUS" = "completed" ] && break
+              done
+              if [ "$OLD_STATUS" != "completed" ]; then
+                echo "::error::Old run has not stopped; prevent double CPU consumption."
+                exit 1
+              fi
+            fi
+          fi
           ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
           if [ "$ACTIVE" -gt 0 ]; then
             echo "已有 $ACTIVE 組自我對弈在執行，不重複啟動。"

@@ -36,6 +36,12 @@ class WorkflowArchitectureTests(unittest.TestCase):
                 if line.strip().startswith("if:") and "always()" in line:
                     self.assertIn("!cancelled()", line, (file.name, lineno))
 
+    def test_switch_to_new_run_cancels_old_before_dispatch(self):
+        script = (WORKFLOWS / "train.yml").read_text(encoding="utf-8")
+        self.assertIn("[切換單輪]", script)
+        self.assertIn("actions/runs/$OLD_RUN/cancel", script)
+        self.assertIn("prevent double CPU consumption", script)
+
     def test_watchdog_respects_manual_cancel(self):
         script = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
         self.assertIn('LATEST_RESULT" = "cancelled"', script)
