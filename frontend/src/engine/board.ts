@@ -103,6 +103,10 @@ export class Board {
   }
 
   repetitionCount() {
+    // A flip permanently reduces the hidden inventory; a capture permanently
+    // removes a board piece. Either resets halfMoveClock to zero, so the
+    // resulting position cannot equal any earlier legal position.
+    if (this.halfMoveClock === 0) return 1
     const current = this.snapshot()
     let count = 1
     for (const entry of this.history) if (entry === current) count++
