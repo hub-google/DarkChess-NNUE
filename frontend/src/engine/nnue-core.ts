@@ -12,17 +12,36 @@ export class BrowserNNUE {
   ) {}
 
   evaluate(board: Board) {
-    const input = extractFeatures(board)
-    // Exactly equivalent to dense FC1, but the 498-feature board vector is
-    // sparse. Collect its active coordinates ONCE rather than scanning 498
-    // entries for each of the 256 neurons at every search leaf.
+    // Build sparse public features in ascending index order directly.
+    // This preserves the previous Float32 feature values and FC1 sum order,
+    // while avoiding a 498-element tensor allocation and scan at each leaf.
     const active: number[] = []
-    for (let col = 0; col < 498; col++) if (input[col] !== 0) active.push(col)
+    const values: number[] = []
+    const add = (col: number, value: number) => {
+      if (value !== 0) {
+        active.push(col)
+        values.push(value)
+      }
+    }
+    for (let square = 0; square < 32; square++) {
+      const piece = board.grid[square]
+      if (piece === Piece.HIDDEN) add(square * 15 + 14, 1)
+      else if (piece >= Piece.RED_KING && piece <= Piece.BLK_PAWN) {
+        add(square * 15 + piece - 1, 1)
+      }
+    }
+    for (let piece = 0; piece < 14; piece++) {
+      add(480 + piece, Math.fround(board.remainingCounts[piece] / INITIAL_COUNTS[piece]))
+    }
+    if (board.turn === Color.RED) add(494, 1)
+    else if (board.turn === Color.BLACK) add(495, 1)
+    add(496, Math.fround(Math.min(board.halfMoveClock / 60, 1)))
+    add(497, Math.fround(Math.min(board.repetitionCount() / 3, 1)))
     const hidden1 = new Float32Array(256)
     for (let row = 0; row < 256; row++) {
       let sum = this.fc1b[row]
       const base = row * 498
-      for (const col of active) sum += this.fc1w[base + col] * input[col]
+      for (let i = 0; i < active.length; i++) sum += this.fc1w[base + active[i]] * values[i]
       hidden1[row] = reluClipped(sum)
     }
     const hidden2 = new Float32Array(32)
