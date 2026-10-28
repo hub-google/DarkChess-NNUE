@@ -313,7 +313,23 @@ jobs:
           print("[Training] Downloaded authenticated private replay snapshot.")
           PY
 
+      - name: 確認是否真的新增有效棋譜
+        id: new_replays
+        run: |
+          python -u src/training/new_replay_gate.py \
+            --replay datasets/replay_buffer.jsonl.gz \
+            --marker .github/training_last_snapshot.json \
+            --candidate training_snapshot_candidate.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: 沒有新棋譜時直接跳過模型訓練
+        if: steps.new_replays.outputs.new != 'true'
+        run: |
+          echo "[Training] No new valid replay game IDs; skip training and model validation."
+          echo "### 沒有新棋譜，略過模型訓練" >> "$GITHUB_STEP_SUMMARY"
+
       - name: 確認有效棋譜數量門檻
+        if: steps.new_replays.outputs.new == 'true'
         id: enough_games
         env:
           MIN_TRAINING_GAMES: "1000"
@@ -325,7 +341,7 @@ jobs:
 
 
       - name: 建立訓練快取並重算關鍵局面
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         env:
           MAX_POSITIONS_PER_GAME: "4"
           MAX_TRAINING_SAMPLES: "2000000"
@@ -339,7 +355,7 @@ jobs:
         run: python -u src/training/build_training_cache.py
 
       - name: 檢查訓練資料是否足夠
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         env:
           MIN_TRAINING_GAMES: "1000"
         run: |
@@ -348,7 +364,7 @@ jobs:
             --min-games "$MIN_TRAINING_GAMES"
 
       - name: 訓練新一代候選模型
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         env:
           BATCH_SIZE: "1024"
           TRAINING_EPOCHS: "3"
@@ -363,7 +379,7 @@ jobs:
         run: python -u src/training/train.py
 
       - name: 檢查新舊模型的對稱性
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         env:
           TORCH_NUM_THREADS: "1"
         run: |
@@ -375,21 +391,21 @@ jobs:
             --output symmetry_report.json
 
       - name: 準備共用引擎模型驗證環境
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: 匯出新舊模型的共用評估權重
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         run: |
           python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
           python -u src/training/export_nnue.py --input models/challenger.nnue --output-dir validation_models/challenger
           npm ci --prefix frontend
           ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
       - name: 以相同搜尋引擎驗證新舊模型棋力
-        if: steps.enough_games.outputs.ready == 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         id: validate
         timeout-minutes: 130
         run: |
@@ -416,6 +432,39 @@ jobs:
             --challenger models/challenger.policy \
             --epochs 1 \
             --max-samples 4096
+
+      - name: 記錄這批棋譜已完成訓練與棋力驗證
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true' && steps.validate.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp training_snapshot_candidate.json .github/training_last_snapshot.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/training_last_snapshot.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: record evaluated replay snapshot"
+            git reset --hard HEAD
+            PUSHED=false
+            for attempt in 1 2 3; do
+              git fetch origin master
+              if ! git rebase origin/master; then
+                git rebase --abort || true
+                echo "::error::Training marker conflicted with another update."
+                exit 1
+              fi
+              if git push origin HEAD:master; then
+                PUSHED=true
+                break
+              fi
+              sleep "$((attempt * 3))"
+            done
+            if [ "$PUSHED" != "true" ]; then
+              echo "::error::Could not save last evaluated replay snapshot."
+              exit 1
+            fi
+          fi
+          echo "[Training] Recorded evaluated snapshot; unchanged data will not retrain."
 
       - name: 保存模型驗證與訓練紀錄
         if: ${{ always() && !cancelled() }}
@@ -488,11 +537,11 @@ jobs:
           echo "Promoted champion: requested GitHub Pages redeployment."
 
       - name: 未通過驗證則保留舊模型
-        if: steps.enough_games.outputs.ready == 'true' && steps.validate.outputs.passed != 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true' && steps.validate.outputs.passed != 'true'
         run: echo "Challenger did not pass paired SPRT; existing champion is retained."
 
       - name: 資料不足時繼續累積棋譜
-        if: steps.enough_games.outputs.ready != 'true'
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready != 'true'
         run: |
           echo "[Training] Need at least 1000 complete games before training."
           echo "[Training] No false failure, no false champion promotion."
