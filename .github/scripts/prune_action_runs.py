@@ -1,4 +1,4 @@
-"""Keep one latest GitHub Actions run per *logical* task, without losing HF data.
+"""Preserve every self-play Actions run for diagnosis; prune other workflows only.
 
 The three workflow files are shared by several logical jobs. Categorize runs by
 the event and stable run-name, not merely by workflow file. Never cancel any
@@ -139,7 +139,9 @@ def self_play_artifacts_safe(run_id, hf_api=None):
 
 
 def choose_deletions(workflow, runs, protected_run_id=None):
-    """Select only *completed* older records from each logical task group."""
+    """Select older non-self-play records only; self-play history is immutable."""
+    if workflow == "self_play":
+        return []
     groups = defaultdict(list)
     for run in runs:
         groups[run_group(workflow, run)].append(run)
@@ -173,6 +175,11 @@ def prune(scope="all", dry_run=False):
     retained = 0
     inspected = 0
     for workflow, filename in WORKFLOWS.items():
+        # Never delete self-play runs, even if a caller passes --scope all.
+        # They contain irreplaceable per-move timing and failure diagnostics.
+        if workflow == "self_play":
+            print("[Prune] Preserve ALL self-play run history and job logs.")
+            continue
         if scope not in ("all", workflow):
             continue
         runs = pages(f"actions/workflows/{filename}/runs", "workflow_runs")
