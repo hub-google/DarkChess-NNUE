@@ -139,9 +139,7 @@ def self_play_artifacts_safe(run_id, hf_api=None):
 
 
 def choose_deletions(workflow, runs, protected_run_id=None):
-    """Select older non-self-play records only; self-play history is immutable."""
-    if workflow == "self_play":
-        return []
+    """Preserve real self-play rounds while pruning older maintenance runs."""
     groups = defaultdict(list)
     for run in runs:
         groups[run_group(workflow, run)].append(run)
@@ -151,6 +149,8 @@ def choose_deletions(workflow, runs, protected_run_id=None):
         # The new run-name is now the durable record for those logical jobs.
         # Old scheduled/push-only orchestration runs will never recur under the
         # new task names. They can all disappear; manual rounds remain protected.
+        if workflow == "self_play" and group == "self-play":
+            continue
         keep_count = 0 if workflow == "self_play" and group in (
             "legacy scheduled check", "legacy self-play setup"
         ) else 1
@@ -175,11 +175,6 @@ def prune(scope="all", dry_run=False):
     retained = 0
     inspected = 0
     for workflow, filename in WORKFLOWS.items():
-        # Never delete self-play runs, even if a caller passes --scope all.
-        # They contain irreplaceable per-move timing and failure diagnostics.
-        if workflow == "self_play":
-            print("[Prune] Preserve ALL self-play run history and job logs.")
-            continue
         if scope not in ("all", workflow):
             continue
         runs = pages(f"actions/workflows/{filename}/runs", "workflow_runs")
