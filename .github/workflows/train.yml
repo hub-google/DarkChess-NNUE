@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
-      actions: read
+      actions: write
     concurrency:
       group: darkchess-hf-stage-writer
       cancel-in-progress: false
@@ -51,6 +51,13 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           BACKFILL_RUN_IDS: "40626539280 40656750983 40696580034 40745528713"
         run: python -u src/workers/backfill_completed_runs.py
+      - name: 完成 HF 實際讀回後啟動新資料模型訓練
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo "[Backfill] Verified HF upload finished; training workflow dispatched."
 
   python-regression:
     if: github.event_name == 'push'
