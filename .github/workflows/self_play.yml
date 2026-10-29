@@ -1,8 +1,8 @@
 name: 自動對弈與中斷接續
-run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' || github.event.schedule == '23 * * * *' && '每小時恢復檢查' || github.event.schedule == '17 */3 * * *' && '棋譜修復與統計' || github.event.schedule == '43 3 1 * *' && '每月排程維護' || '自動對弈系統' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' || github.event.schedule == '23 * * * *' && '每小時恢復檢查' || github.event.schedule == '43 3 1 * *' && '每月排程維護' || '自動對弈系統' }}
 
 # Exactly three visible active workflows; ALL games use shared DarkChessEngine:
-# 1. This file: one five-hour CPU matrix + HF upload + next run + recovery
+# 1. This file: one five-hour CPU matrix + verified HF upload + next run
 # 2. train.yml: training, tests and promotion
 # 3. deploy_pages.yml: GitHub Pages publishing
 # Cancellation: ALWAYS guard downstream work with !cancelled().
@@ -17,7 +17,6 @@ on:
         required: false
   schedule:
     - cron: "23 * * * *"      # hourly recovery watchdog
-    - cron: "17 */3 * * *"    # HF recovery + public counters
     - cron: "43 3 1 * *"      # monthly Actions keepalive
 
 permissions:
@@ -184,6 +183,11 @@ jobs:
           echo "[HF Writer] Artifact tree:"
           find output_data -maxdepth 3 -type f | head -n 40 || true
           echo "[HF Writer] Top-level completed archives: $(find output_data -maxdepth 1 -name '*.jsonl.gz' -type f | wc -l)"
+          # A nested download directory is a broken workflow, never a valid zero-game round.
+          if find output_data -mindepth 2 -name '*.jsonl.gz' -print -quit | grep -q .; then
+            echo "::error::Completed replay archives are nested below output_data/; wrong Artifact extraction path."
+            exit 1
+          fi
       - name: 驗證並集中上傳完整棋譜
         id: upload
         shell: bash
@@ -193,9 +197,19 @@ jobs:
           WAVE: "single-run"
         run: |
           set -euo pipefail
-          # Checkpoint-only waves are not model training data.
+          # A round with no complete games may continue ONLY if every worker
+          # provided a resumable checkpoint. This is NOT an HF-upload success.
           if ! compgen -G 'output_data/*.jsonl.gz' > /dev/null; then
-            echo "[HF Writer] Zero completed validated games; retained resume checkpoints, no HF upload."
+            if [ ! -d resume_state ]; then
+              echo "::error::No completed replays and no checkpoints; refuse false success."
+              exit 1
+            fi
+            CHECKPOINTS=$(find resume_state -maxdepth 1 -type f -name 'worker_*.json' | wc -l | tr -d ' ')
+            if [ "$CHECKPOINTS" -ne 15 ]; then
+              echo "::error::No completed replays and only $CHECKPOINTS/15 checkpoints; refuse false success."
+              exit 1
+            fi
+            echo "::notice::No complete games this round. All 15 checkpoints saved; continuing without claiming an HF upload."
             echo "uploaded=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -211,8 +225,34 @@ jobs:
               sleep 30
             fi
           done
-          echo "::error::Upload failed; recovery artifacts preserve completed games."
+          echo "::error::HF upload or remote read-back failed; original artifacts are retained. No next round will start."
           exit 1
+      - name: 驗證本輪十五份原始 Artifact 均已交付
+        if: ${{ success() && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          result = subprocess.check_output(
+              ["gh", "api", f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100"],
+              text=True,
+          )
+          artifacts = json.loads(result)["artifacts"]
+          actual = {a["name"] for a in artifacts if not a.get("expired")}
+          expected = {f"selfplay-worker-{i}-{run_id}" for i in range(1, 16)}
+          missing = sorted(expected - actual)
+          if missing:
+              raise SystemExit(f"::error::Missing worker Artifacts: {missing}; stop before next round.")
+          print(f"[HF Writer] VERIFIED all 15 worker Artifacts for run {run_id}.")
+          PY
       - name: 雲端上傳失敗時保留原始資料
         if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -223,8 +263,8 @@ jobs:
           retention-days: 14
 
   continue-next-run:
-    needs: upload
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.upload.result == 'success' }}
+    needs: [upload, selfplay-workers]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.upload.result == 'success' && needs.selfplay-workers.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -283,6 +323,10 @@ jobs:
             echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
             exit 0
           fi
+          if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" != "success" ]; then
+            echo "::error::Last self-play failed ($LATEST_RESULT). Do not bypass a failed HF upload with a new run."
+            exit 1
+          fi
           ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
             --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
           if [ "$ACTIVE" -gt 0 ]; then
@@ -291,76 +335,6 @@ jobs:
           fi
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
           echo "[Watchdog] Started one new self-play round."
-
-  maintenance:
-    if: ${{ github.event_name == 'schedule' && github.event.schedule == '17 */3 * * *' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 58
-    concurrency:
-      group: darkchess-hf-stage-writer
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: master
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: 安裝資料復原與統計工具
-        run: pip install numpy numba huggingface_hub
-      - name: 補傳先前上傳失敗的棋譜
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          MAX_RECOVERY_GROUPS: "4"
-        run: python -u src/workers/recover_failed_uploads.py
-      - name: 僅清理已安全備份的完成紀錄
-        if: ${{ always() && !cancelled() }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python .github/scripts/prune_action_runs.py --scope all
-      - name: 統計已驗證且不重複的對弈局數
-        if: ${{ always() && !cancelled() }}
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -u .github/scripts/publish_training_status.py
-      - name: 安全發布最新訓練狀態
-        if: ${{ always() && !cancelled() }}
-        id: publish
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add frontend/public/training-status.json
-          if git diff --staged --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          git commit -m "chore: publish verified self-play progress"
-          for attempt in 1 2 3 4 5; do
-            git fetch origin master
-            if ! git rebase origin/master; then
-              git rebase --abort || true
-              echo "::error::Training status conflict; existing data preserved."
-              exit 1
-            fi
-            if git push origin HEAD:master; then
-              echo "changed=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            sleep "$((attempt * 3))"
-          done
-          echo "::error::Could not push verified counters."
-          exit 1
-      - name: 統計更新時重新部署網站
-        if: ${{ !cancelled() && steps.publish.outputs.changed == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
 
   monthly-keepalive:
     if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}

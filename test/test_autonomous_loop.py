@@ -20,13 +20,12 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertEqual(code.count("  continue-next-run:"), 1)
         self.assertNotIn("  wave2-workers:", code)
         self.assertIn("needs: selfplay-workers", code)
-        self.assertIn("needs: upload", code)
+        self.assertIn("needs: [upload, selfplay-workers]", code)
         self.assertIn("needs.upload.result == 'success'", code)
         self.assertEqual(code.count("worker_id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]"), 1)
         self.assertEqual(code.count("max-parallel: 15"), 1)
         self.assertEqual(code.count("BUDGET=18000"), 1)
         self.assertEqual(code.count("timeout-minutes: 345"), 1)
-        self.assertEqual(code.count("timeout-minutes: 58"), 1)
         self.assertEqual(code.count("actions/upload-artifact@v4"), 2)
         self.assertEqual(code.count("actions/download-artifact@v4"), 1)
         self.assertEqual(code.count("merge-multiple: true"), 1)
@@ -76,14 +75,14 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertIn("resume_state/*.json", code)
         self.assertIn("resume_state/*.memo", code)
 
-    def test_training_status_is_published_and_pages_redeployed(self):
+    def test_hf_upload_is_in_same_run_with_no_periodic_repair_job(self):
         code = self.read("self_play.yml")
-        self.assertIn("maintenance:", code)
-        self.assertIn('cron: "17 */3 * * *"', code)
-        self.assertIn("publish_training_status.py", code)
-        self.assertIn("recover_failed_uploads.py", code)
-        self.assertIn("gh workflow run deploy_pages.yml", code)
-        self.assertIn("contents: write", code)
+        self.assertNotIn("  maintenance:", code)
+        self.assertNotIn('cron: "17 */3 * * *"', code)
+        self.assertNotIn("recover_failed_uploads.py", code)
+        self.assertIn("HF upload or remote read-back failed", code)
+        self.assertIn('LAST_RESULT" != "success"', code)
+        self.assertIn("python -u src/workers/upload_batch.py", code)
 
     def test_only_three_active_workflows(self):
         self.assertEqual(

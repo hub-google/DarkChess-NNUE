@@ -28,6 +28,7 @@ class WorkflowArchitectureTests(unittest.TestCase):
         self.assertEqual(content.count("SEARCH_DEPTH="), 1)
         self.assertIn("BUDGET=18000", content)
         self.assertIn("needs.upload.result == 'success'", content)
+        self.assertIn("needs.selfplay-workers.result == 'success'", content)
         self.assertIn("Production paused", content)
 
     def test_worker16_extracts_artifacts_at_repository_root(self):
@@ -37,6 +38,10 @@ class WorkflowArchitectureTests(unittest.TestCase):
         self.assertIn("          path: .", downloader)
         self.assertNotIn("          path: output_data", downloader)
         self.assertIn("find output_data -maxdepth 1", content)
+        self.assertIn("find output_data -mindepth 2", content)
+        self.assertIn('CHECKPOINTS" -ne 15', content)
+        self.assertIn("VERIFIED all 15 worker Artifacts", content)
+        self.assertIn("HF upload or remote read-back failed", content)
 
     def test_every_always_condition_checks_cancellation(self):
         for file in WORKFLOWS.glob("*.yml"):
@@ -55,7 +60,10 @@ class WorkflowArchitectureTests(unittest.TestCase):
         script = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
         self.assertIn('LATEST_RESULT" = "cancelled"', script)
         self.assertIn('CURRENT_STATUS" != "in_progress"', script)
-        self.assertIn("github.event.schedule == '17 */3 * * *'", script)
+        self.assertIn('LAST_RESULT" != "success"', script)
+        self.assertNotIn('cron: "17 */3 * * *"', script)
+        self.assertNotIn("recover_failed_uploads.py", script)
+        self.assertNotIn("  maintenance:", script)
 
 
 if __name__ == "__main__":
