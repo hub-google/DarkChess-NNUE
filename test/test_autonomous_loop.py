@@ -81,7 +81,7 @@ class AutonomousWorkflowContractTests(unittest.TestCase):
         self.assertNotIn('cron: "17 */3 * * *"', code)
         self.assertNotIn("recover_failed_uploads.py", code)
         self.assertIn("HF upload or remote read-back failed", code)
-        self.assertIn('LAST_RESULT" != "success"', code)
+        self.assertIn('LATEST_RESULT" != "success"', code)
         self.assertIn("python -u src/workers/upload_batch.py", code)
 
     def test_only_three_active_workflows(self):

@@ -60,7 +60,7 @@ class WorkflowArchitectureTests(unittest.TestCase):
         script = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
         self.assertIn('LATEST_RESULT" = "cancelled"', script)
         self.assertIn('CURRENT_STATUS" != "in_progress"', script)
-        self.assertIn('LAST_RESULT" != "success"', script)
+        self.assertIn('LATEST_RESULT" != "success"', script)
         self.assertNotIn('cron: "17 */3 * * *"', script)
         self.assertNotIn("recover_failed_uploads.py", script)
         self.assertNotIn("  maintenance:", script)

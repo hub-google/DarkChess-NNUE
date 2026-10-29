@@ -1,6 +1,6 @@
 # 台灣暗棋自我進化系統
 
-以 GitHub Actions 持續產生完整合法的自我對弈棋譜，將資料保存在Hugging Face 資料集，訓練候選神經網路模型，並透過新舊模型公平對戰決定是否升級。
+以 GitHub Actions 持續產生完整合法的自我對弈棋譜，將資料保存在 Hugging Face 資料集，訓練候選神經網路模型，並透過新舊模型公平對戰決定是否升級。
 
 [開啟暗棋網站](https://hub-google.github.io/DarkChess-NNUE/)｜[查看執行紀錄](https://github.com/hub-google/DarkChess-NNUE/actions)
 
