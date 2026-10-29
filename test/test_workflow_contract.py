@@ -33,9 +33,9 @@ class WorkflowArchitectureTests(unittest.TestCase):
     def test_worker16_extracts_artifacts_at_repository_root(self):
         content = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
         self.assertIn("pattern: selfplay-worker-*-${{ github.run_id }}", content)
-        self.assertIn("path: .\\n          merge-multiple: true".replace("\\\\n", "\\n"), content)
+        self.assertIn("          path: .", content)
+        self.assertNotIn("          path: output_data", content)
         self.assertIn("find output_data -maxdepth 1", content)
-        self.assertNotIn("path: output_data\\n          merge-multiple: true".replace("\\\\n", "\\n"), content)
 
     def test_every_always_condition_checks_cancellation(self):
         for file in WORKFLOWS.glob("*.yml"):
