@@ -28,7 +28,7 @@ class ActionRunPruningTests(unittest.TestCase):
     def test_keep_newest_even_if_active_and_never_delete_active(self):
         runs = [run(10, created="2026-10-24"), run(11, created="2026-10-25", status="in_progress")]
         result = pruner.choose_deletions("self_play", runs, protected_run_id=11)
-        self.assertEqual([r["id"] for _, r in result], [10])
+        self.assertEqual([r["id"] for _, r in result], [])  # Keep all real self-play diagnostics
         self.assertEqual(pruner.choose_deletions("self_play",
                          [run(1, status="in_progress", created="2026-10-24"),
                           run(2, created="2026-10-25")]), [])
@@ -52,7 +52,7 @@ class ActionRunPruningTests(unittest.TestCase):
         ]
         runs[1]["conclusion"] = "cancelled"
         selected = pruner.choose_deletions("self_play", runs)
-        self.assertEqual([x["id"] for _, x in selected], [21])
+        self.assertEqual([x["id"] for _, x in selected], [])  # Never prune historical game runs
 
     def test_old_completed_ci_runs_pruned_separately_from_production(self):
         runs = [
