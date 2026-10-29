@@ -44,12 +44,14 @@ class BackfillTests(unittest.TestCase):
             result.write_bytes(Path(api.upload_file.call_args.kwargs["path_or_fileobj"]).read_bytes())
             return str(result)
 
-        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "hub-google/DarkChess-NNUE",
-                                     "GH_TOKEN": "test", "HF_TOKEN": "test"}), (
-             patch.object(backfill, "HfApi", return_value=api)), (
-             patch.object(backfill, "gh", side_effect=fake_gh)), (
-             patch.object(backfill, "merge_and_upload", side_effect=fake_merge)), (
-             patch.object(backfill, "hf_hub_download", side_effect=fake_download)):
+        with (
+            patch.dict(os.environ, {"GITHUB_REPOSITORY": "hub-google/DarkChess-NNUE",
+                                     "GH_TOKEN": "test", "HF_TOKEN": "test"}),
+            patch.object(backfill, "HfApi", return_value=api),
+            patch.object(backfill, "gh", side_effect=fake_gh),
+            patch.object(backfill, "merge_and_upload", side_effect=fake_merge),
+            patch.object(backfill, "hf_hub_download", side_effect=fake_download),
+        ):
             backfill.backfill([123])
         self.assertEqual(len(seen), 1)
         self.assertEqual(api.upload_file.call_args.kwargs["path_in_repo"], "receipts/backfill/123.json")
@@ -65,11 +67,13 @@ class BackfillTests(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / "worker_1.json").write_text("{}")
             return ""
-        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "hub-google/DarkChess-NNUE",
-                                     "GH_TOKEN": "test", "HF_TOKEN": "test"}), (
-             patch.object(backfill, "HfApi", return_value=api)), (
-             patch.object(backfill, "gh", side_effect=fake_gh)), (
-             patch.object(backfill, "merge_and_upload") as uploader):
+        with (
+            patch.dict(os.environ, {"GITHUB_REPOSITORY": "hub-google/DarkChess-NNUE",
+                                     "GH_TOKEN": "test", "HF_TOKEN": "test"}),
+            patch.object(backfill, "HfApi", return_value=api),
+            patch.object(backfill, "gh", side_effect=fake_gh),
+            patch.object(backfill, "merge_and_upload") as uploader,
+        ):
             backfill.backfill([123])
         uploader.assert_not_called()
         api.upload_file.assert_not_called()
