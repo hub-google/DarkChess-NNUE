@@ -33,8 +33,9 @@ class WorkflowArchitectureTests(unittest.TestCase):
     def test_worker16_extracts_artifacts_at_repository_root(self):
         content = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
         self.assertIn("pattern: selfplay-worker-*-${{ github.run_id }}", content)
-        self.assertIn("          path: .", content)
-        self.assertNotIn("          path: output_data", content)
+        downloader = content.split("- uses: actions/download-artifact@v4", 1)[1].split("- name: 列出第16號實際收到的完整棋譜", 1)[0]
+        self.assertIn("          path: .", downloader)
+        self.assertNotIn("          path: output_data", downloader)
         self.assertIn("find output_data -maxdepth 1", content)
 
     def test_every_always_condition_checks_cancellation(self):
