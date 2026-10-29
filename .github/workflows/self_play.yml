@@ -173,8 +173,17 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: selfplay-worker-*-${{ github.run_id }}
-          path: output_data
+          # Artifacts already contain output_data/ and resume_state/.
+          # Extracting into output_data/ hid actual games one directory too deep.
+          path: .
           merge-multiple: true
+      - name: 列出第16號實際收到的完整棋譜
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[HF Writer] Artifact tree:"
+          find output_data -maxdepth 3 -type f | head -n 40 || true
+          echo "[HF Writer] Top-level completed archives: $(find output_data -maxdepth 1 -name '*.jsonl.gz' -type f | wc -l)"
       - name: 驗證並集中上傳完整棋譜
         id: upload
         shell: bash
