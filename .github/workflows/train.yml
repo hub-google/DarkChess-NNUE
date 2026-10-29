@@ -25,6 +25,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') }}
 
 jobs:
+  # One-off repair uses the production Worker-16 uploader and archived original
+  # games. This is not a fourth workflow and does not generate synthetic games.
+  hf-backfill:
+    name: 補傳歷史完整棋譜並驗證 HF 回讀
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[hf-backfill-2026-10-28]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝與正式第16號完全相同的資料驗證與上傳套件
+        run: pip install numpy numba huggingface_hub
+      - name: 補傳 10/28 原始棋譜並逐批驗證 HF 讀回
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BACKFILL_RUN_IDS: "40626539280 40656750983 40696580034 40745528713"
+        run: python -u src/workers/backfill_completed_runs.py
+
   python-regression:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
