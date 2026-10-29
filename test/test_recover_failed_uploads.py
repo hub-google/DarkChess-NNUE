@@ -67,9 +67,10 @@ class RecoveryTests(unittest.TestCase):
             api.file_exists.call_args.kwargs["filename"],
         )
 
-    def test_new_single_run_writer_success_does_not_reupload(self):
+    def test_successful_writer_alone_does_not_prove_hf_upload(self):
         api = MagicMock()
-        api.file_exists.return_value = False
+        # Only an HF recovery receipt permits skipping, not a green job.
+        api.file_exists.return_value = True
         def new_api(resource):
             if "/workflows/self_play.yml/runs?" in resource:
                 return {"workflow_runs": [{"id": 123, "status": "completed",
@@ -88,7 +89,9 @@ class RecoveryTests(unittest.TestCase):
               patch.object(recovery, "merge_and_upload") as upload):
             recovery.recover()
         upload.assert_not_called()
-        api.file_exists.assert_not_called()
+        api.file_exists.assert_called_once()
+        self.assertEqual(api.file_exists.call_args.kwargs["filename"],
+                         "receipts/recovery/123/run.json")
 
     def test_single_run_recovery_artifact_is_discoverable(self):
         api = MagicMock()
