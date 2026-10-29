@@ -136,21 +136,31 @@ jobs:
             *) echo "::error::Invalid production depth: $CURRENT_DEPTH"; exit 1 ;;
           esac
           if [ "${{ contains(github.event.head_commit.message, '[切換單輪]') }}" = "true" ]; then
-            OLD_RUN=40443703219
+            OLD_RUN=40787827023
             OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
             if [ "$OLD_STATUS" != "completed" ]; then
-              echo "停止仍使用舊五輪規則的 Run $OLD_RUN。"
+              echo "[Switch] Stop old self-play #156 ($OLD_RUN) before launching new version."
               gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN/cancel"
-              for TRY in 1 2 3 4 5 6 7 8 9 10 11 12; do
+              for TRY in $(seq 1 24); do
                 sleep 5
                 OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
                 [ "$OLD_STATUS" = "completed" ] && break
               done
               if [ "$OLD_STATUS" != "completed" ]; then
-                echo "::error::Old run has not stopped; prevent double CPU consumption."
+                echo "[Switch] Graceful cancel did not finish; requesting force cancel."
+                gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN/force-cancel"
+                for TRY in $(seq 1 24); do
+                  sleep 5
+                  OLD_STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$OLD_RUN" --jq '.status')
+                  [ "$OLD_STATUS" = "completed" ] && break
+                done
+              fi
+              if [ "$OLD_STATUS" != "completed" ]; then
+                echo "::error::Old run still active, so refusing to run duplicate 15-worker matrix."
                 exit 1
               fi
             fi
+            echo "[Switch] Old self-play #156 is stopped. Dispatch new first, then remove old record."
           fi
           ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
           if [ "$ACTIVE" -gt 0 ]; then
@@ -159,6 +169,21 @@ jobs:
           fi
           gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master --field continuous=true
           echo "正式 NNUE CPU 自我對弈已派送，15 名運算員。"
+          if [ "${{ contains(github.event.head_commit.message, '[切換單輪]') }}" = "true" ]; then
+            NEW_RUN=""
+            for TRY in $(seq 1 24); do
+              NEW_RUN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=20" --jq '[.workflow_runs[] | select(.id > 40787827023)] | .[0].id // empty')
+              [ -n "$NEW_RUN" ] && break
+              sleep 5
+            done
+            if [ -z "$NEW_RUN" ]; then
+              echo "::error::New run was dispatched but not found; preserve old record until verified."
+              exit 1
+            fi
+            echo "[Switch] New self-play run #$NEW_RUN is registered; deleting obsolete #156."
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/40787827023"
+            echo "[Switch] Deleted obsolete run 40787827023 after confirming new run $NEW_RUN."
+          fi
 
   six-ply-profile:
     name: 六層選擇性搜尋效能試驗
