@@ -78,24 +78,12 @@ def recover():
                     sources_by_wave["run"].append(a)
                 elif legacy:
                     groups[f"legacy-{a['id']}"] = [a]
-            # A worker may finish but the writer may be cancelled before creating
-            # its recovery artifact. Consult the completed writer job's result.
-            if sources_by_wave:
-                jobs = gh_json(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
-                verified_waves = set()
-                for job in jobs:
-                    match = re.search(
-                        r"Wave\s+(\d+)\s*/\s*worker 16 HF writer",
-                        job.get("name", ""), re.I,
-                    )
-                    if match and job.get("conclusion") == "success":
-                        verified_waves.add(match.group(1))
-                    if "第16號棋譜上傳員" in job.get("name", "") and job.get("conclusion") == "success":
-                        verified_waves.add("run")
-                # Cancelled runs might never schedule the writer.
-                for wave, worker_artifacts in sources_by_wave.items():
-                    if wave not in verified_waves:
-                        groups.setdefault("run" if wave == "run" else f"wave-{wave}", worker_artifacts)
+            # A green writer job is not evidence of uploaded games: historically
+            # Worker 16 extracted artifacts into output_data/output_data and
+            # returned success with uploaded=false even when games existed.
+            # A remote verified recovery receipt, not job success, is the gate.
+            for wave, worker_artifacts in sources_by_wave.items():
+                groups.setdefault("run" if wave == "run" else f"wave-{wave}", worker_artifacts)
 
             for key, parts in sorted(groups.items()):
                 if not parts:
@@ -121,7 +109,8 @@ def recover():
                                 raise RuntimeError(f"Duplicate recovery file name: {source.name}")
                             shutil.copy2(source, destination)
                     if not list(output.glob("*.jsonl.gz")):
-                        raise RuntimeError(f"No recoverable games in {run_id}/{key}")
+                        print(f"[Recovery] Run {run_id}/{key}: only incomplete checkpoints, skip.")
+                        continue
                     old = os.environ.get("OUTPUT_DIR")
                     try:
                         os.environ["OUTPUT_DIR"] = str(output)
