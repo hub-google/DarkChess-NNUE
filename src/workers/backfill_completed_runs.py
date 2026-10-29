@@ -42,8 +42,8 @@ def backfill(run_ids):
         archives = [
             a for a in response.get("artifacts", [])
             if not a.get("expired") and
-            (re.fullmatch(rf"selfplay-worker-\\d+-{run_id}", a["name"]) or
-             re.fullmatch(rf"selfplay-wave-\\d+-worker-\\d+-{run_id}", a["name"]))
+            (re.fullmatch(rf"selfplay-worker-\d+-{run_id}", a["name"]) or
+             re.fullmatch(rf"selfplay-wave-\d+-worker-\d+-{run_id}", a["name"]))
         ]
         print(f"[Backfill] Run {run_id} artifacts={len(archives)}", flush=True)
         if not archives:
