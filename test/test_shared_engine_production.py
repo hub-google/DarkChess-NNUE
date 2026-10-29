@@ -56,7 +56,7 @@ class SharedDecisionEngineProductionTests(unittest.TestCase):
         self.assertEqual(workflow.count("接續上一個 Run 的未完成搜尋"), 1)
         self.assertEqual(workflow.count("resume_state/*.json"), 1)
         self.assertEqual(workflow.count("resume_state/*.memo"), 1)
-        self.assertIn("validated games; retained resume checkpoints", workflow)
+        self.assertIn("All 15 checkpoints saved; continuing without claiming an HF upload", workflow)
         self.assertIn("uploaded=true", workflow)
         self.assertIn("uploaded=false", workflow)
 
