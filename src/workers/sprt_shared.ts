@@ -95,8 +95,8 @@ function main() {
         !same('depth', config.depth) || !same('node_budget', config.nodes) ||
         !same('max_seconds', config.ms / 1000) || !same('seed', config.seed) ||
         !same('max_retries', config.maxRetries) ||
-        !Number.isInteger(saved.rng_state) ||
-        !Number.isInteger(saved.pairs_played) ||
+        !Number.isInteger(Number(saved.rng_state)) ||
+        !Number.isInteger(Number(saved.pairs_played)) ||
         !Array.isArray(saved.pair_scores) ||
         saved.pair_scores.length !== saved.pairs_played ||
         Number(saved.pairs_played) < 1 || Number(saved.pairs_played) >= config.pairs) {
