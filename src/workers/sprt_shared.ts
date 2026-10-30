@@ -3,12 +3,14 @@
  * No incomplete games are ever silently counted as draws.
  */
 import {writeFileSync, appendFileSync, readFileSync} from 'node:fs'
+import {createHash} from 'node:crypto'
 import {Board, Color, Piece} from '../../frontend/src/engine/board'
 import {DarkChessEngine} from '../../frontend/src/engine/search'
 import {loadNNUE} from './model_runtime'
 
 type Config = {pairs: number; depth: number; nodes: number; ms: number; elo0: number; elo1: number;
-  alpha: number; beta: number; seed: number; maxRetries: number; output: string; resume: string; champion: string; challenger: string}
+  alpha: number; beta: number; seed: number; maxRetries: number; output: string; resume: string; profile: string; probeOnly: boolean;
+  champion: string; challenger: string}
 const arg = (name: string, fallback: string): string => {
   const i = process.argv.indexOf('--' + name)
   return i >= 0 ? process.argv[i + 1] : fallback
@@ -23,15 +25,21 @@ const config: Config = {
   nodes: number('node-budget', 1200), ms: 1000 * number('max-seconds', 0.1),
   elo0: number('elo0', -20), elo1: number('elo1', 20),
   alpha: number('alpha', 0.05), beta: number('beta', 0.05),
-  seed: number('seed', 20260731), maxRetries: number('max-retries', 8),
+  seed: number('seed', -1), maxRetries: number('max-retries', 8),
   output: arg('output', 'sprt_results.json'), resume: arg('resume', ''),
+  profile: arg('profile', 'fast'), probeOnly: process.argv.includes('--probe-only'),
   champion: arg('champion', 'validation_models/champion'),
   challenger: arg('challenger', 'validation_models/challenger')
 }
 if (config.pairs < 1 || config.depth < 1 || config.nodes < 1 || config.ms <= 0 ||
     config.elo1 <= config.elo0 || config.alpha <= 0 || config.alpha >= 1 ||
-    config.beta <= 0 || config.beta >= 1) throw new Error('Invalid SPRT configuration')
-let seed = config.seed >>> 0
+    config.beta <= 0 || config.beta >= 1 ||
+    !Number.isInteger(config.seed) || config.seed < -1 ||
+    !['fast', 'production'].includes(config.profile) ||
+    (config.probeOnly && config.profile !== 'production') ||
+    (config.resume !== '' && config.profile !== 'fast')) throw new Error('Invalid SPRT configuration')
+let seed = 0
+let productionDeepMoves = 0
 function random() {
   seed += 0x6D2B79F5
   let x = seed
@@ -56,7 +64,19 @@ function play(first: DarkChessEngine, second: DarkChessEngine, bag: Piece[], ope
   if (!board.play({from: opening, to: opening, flip: true})) throw new Error('Invalid first reveal')
   for (let ply = 1; ply < 512 && !board.isOver; ply++) {
     const engine = board.turn === firstColor ? first : second
-    const analysis = engine.analyze(board, {maxDepth: config.depth, nodeBudget: config.nodes, maxMs: config.ms})
+    // A production probe uses the actual self-play depth/branch policy, without
+    // either a node or wall-time cutoff. The fast SPRT remains a screening test.
+    const targetDepth = board.ply < 10 ? 1 : 6
+    const analysis = config.profile === 'production'
+      ? engine.analyze(board, {
+          maxDepth: targetDepth, requireFullDepth: true,
+          innerMoveLimit: targetDepth === 6 ? 2 : undefined,
+        })
+      : engine.analyze(board, {maxDepth: config.depth, nodeBudget: config.nodes, maxMs: config.ms})
+    if (config.profile === 'production') {
+      if (analysis.depth !== targetDepth) throw new Error('Incomplete production-depth search')
+      if (targetDepth === 6) productionDeepMoves++
+    }
     if (!analysis.move) throw new Error('Non-terminal has no legal moves')
     if (!board.play(analysis.move)) throw new Error('Illegal move by shared engine')
   }
@@ -77,6 +97,13 @@ function publish(passed: boolean) {
 function main() {
   const championModel = loadNNUE(config.champion)
   const challengerModel = loadNNUE(config.challenger)
+  // The referee keeps a reproducible stream per model pair, not one reusable
+  // fixed set of deals across every future candidate.
+  const initialSeed = config.seed >= 0
+    ? config.seed >>> 0
+    : createHash('sha256').update('darkchess-matched-v2/' + championModel.version + '/' +
+        challengerModel.version).digest().readUInt32LE(0)
+  seed = initialSeed
   const champion = new DarkChessEngine(board => championModel.model.evaluate(board))
   const challenger = new DarkChessEngine(board => challengerModel.model.evaluate(board))
   const upper = Math.log((1 - config.beta) / config.alpha)
@@ -93,7 +120,8 @@ function main() {
         !same('elo0', config.elo0) || !same('elo1', config.elo1) ||
         !same('alpha', config.alpha) || !same('beta', config.beta) ||
         !same('depth', config.depth) || !same('node_budget', config.nodes) ||
-        !same('max_seconds', config.ms / 1000) || !same('seed', config.seed) ||
+        !same('max_seconds', config.ms / 1000) || !same('seed', initialSeed) ||
+        !same('profile', config.profile) ||
         !same('max_retries', config.maxRetries) ||
         !Number.isInteger(Number(saved.rng_state)) ||
         !Number.isInteger(Number(saved.pairs_played)) ||
@@ -148,13 +176,17 @@ function main() {
     score_rate: score / (2 * played), log_likelihood_ratio: llr,
     elo0: config.elo0, elo1: config.elo1,
     alpha: config.alpha, beta: config.beta, depth: config.depth,
-    node_budget: config.nodes, max_seconds: config.ms / 1000, seed: config.seed,
+    node_budget: config.nodes, max_seconds: config.ms / 1000, seed: initialSeed,
+    profile: config.profile, production_full_depth_moves: productionDeepMoves,
     max_retries: config.maxRetries, rng_state: seed >>> 0,
     pair_scores, incomplete_deals_discarded: incomplete,
     champion_model: championModel.version, challenger_model: challengerModel.version,
     note: 'One DarkChessEngine across web, self-play and SPRT. Undecided never promotes.'}
   writeFileSync(config.output, JSON.stringify(report, null, 2))
-  publish(passed)
+  if (config.profile === 'production' && productionDeepMoves === 0) {
+    throw new Error('Production probe did not exercise any completed six-ply search')
+  }
+  if (!config.probeOnly) publish(passed)
   console.log('[SPRT] decision=' + decision + ' pairs=' + played + ' challenger score=' + (100 * report.score_rate).toFixed(2) + '% LLR=' + llr.toFixed(3) + ' PASSED=' + passed)
 }
 main()
