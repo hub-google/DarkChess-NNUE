@@ -20,9 +20,11 @@ on:
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
   # deletes only the cutoff-bounded snapshot that it successfully verifies.
-  group: nnue-training-${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'symmetry-ci' || 'production' }}
-  # CI always tests newest source; never interrupt long-running real training.
-  cancel-in-progress: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') }}
+  # Long-running full-depth verification has its own queue; ordinary CI
+  # pushes must not cancel a real CPU match in progress.
+  group: nnue-training-${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[verify-production-probe]') && 'production-depth-probe' || github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'symmetry-ci' || 'production' }}
+  # Only quick CI can be superseded, never training or the production probe.
+  cancel-in-progress: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && !contains(github.event.head_commit.message, '[verify-production-probe]') }}
 
 jobs:
   # One-off repair uses the production Worker-16 uploader and archived original
