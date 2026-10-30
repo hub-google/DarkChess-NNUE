@@ -68,8 +68,9 @@ class ContinuousResearchTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/train.yml").read_text(encoding="utf-8")
         self.assertIn("git add models/research.nnue .github/training_last_snapshot.json", workflow)
         self.assertIn("python -u src/training/research_checkpoint.py", workflow)
-        self.assertLess(workflow.index("cp models/challenger.nnue models/research.nnue"),
-                        workflow.index("node .shared-build/src/workers/sprt_shared.js"))
+        production = workflow.split("  train-and-promote:", 1)[1]
+        self.assertLess(production.index("cp models/challenger.nnue models/research.nnue"),
+                        production.index("node .shared-build/src/workers/sprt_shared.js"))
         self.assertIn("if: steps.validate.outputs.passed == 'true'", workflow)
         self.assertNotIn("cp training_snapshot_candidate.json .github/training_last_snapshot.json\n          git config", workflow.split("- name: 保存模型驗證與訓練紀錄")[1])
 
