@@ -471,6 +471,21 @@ jobs:
             --elo0 -20 \
             --elo1 20 \
             --output sprt_results.json
+          # Keep the SAME candidate and the SAME random stream if 200 pairs are inconclusive.
+          if [ "$(python -c 'import json; print(json.load(open("sprt_results.json"))["decision"])')" = "UNDECIDED" ]; then
+            echo "[SPRT] Inconclusive 200 pairs; continue 200 more without discarding scores."
+            node .shared-build/src/workers/sprt_shared.js \
+              --champion validation_models/champion \
+              --challenger validation_models/challenger \
+              --pairs 400 \
+              --resume sprt_results.json \
+              --depth 6 \
+              --node-budget 1200 \
+              --max-seconds 0.10 \
+              --elo0 -20 \
+              --elo1 20 \
+              --output sprt_results.json
+          fi
 
       - name: 訓練輔助走法預測模型
         if: steps.validate.outputs.passed == 'true'
