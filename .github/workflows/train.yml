@@ -270,6 +270,56 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  verify-production-probe:
+    name: 真正六層完整棋局驗收
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[verify-production-probe]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 105
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝模型匯出環境
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 編譯並執行正式六層換邊對弈
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+          node .shared-build/src/workers/sprt_shared.js \
+            --champion validation_models/champion \
+            --challenger validation_models/champion \
+            --pairs 1 --profile production --probe-only \
+            --output production_probe_results.json
+          python - <<'PY'
+          import json
+          r=json.load(open('production_probe_results.json'))
+          assert r['profile'] == 'production'
+          assert r['games_played'] == 2
+          assert r['production_full_depth_moves'] > 0
+          assert r['decision'] != 'ACCEPT_H1', 'Identical models cannot prove promotion'
+          print('Production-depth 6 completed matched games:', r['games_played'],
+                'completed six-ply searches:', r['production_full_depth_moves'])
+          PY
+      - name: 保存正式六層實測結果
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: complete-depth-smoke-${{ github.run_id }}
+          path: production_probe_results.json
+          if-no-files-found: warn
+          retention-days: 30
+
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
     # Ordinary source pushes execute only regression CI.
