@@ -380,7 +380,7 @@ jobs:
             --manifest training_cache/manifest.json \
             --min-games "$MIN_TRAINING_GAMES"
 
-      - name: 訓練新一代候選模型
+      - name: 延續研究模型訓練新一代候選模型
         if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
         env:
           BATCH_SIZE: "1024"
@@ -394,6 +394,41 @@ jobs:
           SYMMETRY_CONSISTENCY_WEIGHT: "0.02"
           SYMMETRY_CONSISTENCY_EVERY: "4"
         run: python -u src/training/train.py
+
+      - name: 驗證並保存持續訓練的研究模型
+        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gate corrupt/NaN checkpoints before advancing the replay marker.
+          python -u src/training/research_checkpoint.py --checkpoint models/challenger.nnue
+          cp models/challenger.nnue models/research.nnue
+          cp training_snapshot_candidate.json .github/training_last_snapshot.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/research.nnue .github/training_last_snapshot.json
+          git commit -m "chore: advance continuous research NNUE"
+          # A failed push must fail the job, never silently lose the trained weights.
+          PUSHED=false
+          for attempt in 1 2 3; do
+            git fetch origin master
+            if ! git rebase origin/master; then
+              git rebase --abort || true
+              echo "::error::Research model/snapshot changed concurrently; refusing to overwrite."
+              exit 1
+            fi
+            if git push origin HEAD:master; then
+              PUSHED=true
+              break
+            fi
+            sleep "$((attempt * 3))"
+          done
+          if [ "$PUSHED" != "true" ]; then
+            echo "::error::Research checkpoint was not persisted; stopping validation."
+            exit 1
+          fi
+          echo "[Research] Persisted research.nnue and replay marker; next run will train from research.nnue."
+          echo "### 研究模型訓練已接續並保存" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 檢查新舊模型的對稱性
         if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
@@ -450,39 +485,6 @@ jobs:
             --epochs 1 \
             --max-samples 4096
 
-      - name: 記錄這批棋譜已完成訓練與棋力驗證
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true' && steps.validate.outcome == 'success'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp training_snapshot_candidate.json .github/training_last_snapshot.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/training_last_snapshot.json
-          if ! git diff --staged --quiet; then
-            git commit -m "chore: record evaluated replay snapshot"
-            git reset --hard HEAD
-            PUSHED=false
-            for attempt in 1 2 3; do
-              git fetch origin master
-              if ! git rebase origin/master; then
-                git rebase --abort || true
-                echo "::error::Training marker conflicted with another update."
-                exit 1
-              fi
-              if git push origin HEAD:master; then
-                PUSHED=true
-                break
-              fi
-              sleep "$((attempt * 3))"
-            done
-            if [ "$PUSHED" != "true" ]; then
-              echo "::error::Could not save last evaluated replay snapshot."
-              exit 1
-            fi
-          fi
-          echo "[Training] Recorded evaluated snapshot; unchanged data will not retrain."
-
       - name: 保存模型驗證與訓練紀錄
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -493,6 +495,7 @@ jobs:
             sprt_results.json
             symmetry_report.json
             models/challenger.nnue
+            models/research.nnue
             models/challenger.policy
           if-no-files-found: warn
           retention-days: 30
@@ -555,7 +558,10 @@ jobs:
 
       - name: 未通過驗證則保留舊模型
         if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true' && steps.validate.outputs.passed != 'true'
-        run: echo "Challenger did not pass paired SPRT; existing champion is retained."
+        run: |
+          echo "[Research] Challenger was safely retained as research.nnue for the next training."
+          echo "[Champion] Paired SPRT did not prove promotion; existing champion remains active."
+
 
       - name: 資料不足時繼續累積棋譜
         if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready != 'true'
