@@ -116,13 +116,18 @@ jobs:
           BATCH_SIZE=1 NUM_BATCHES=1 SELF_PLAY_SMOKE_DEPTH=2 timeout 480s node .shared-build/src/workers/self_play_shared.js
           python -u src/training/validate_replay.py --directory output_data --min-games 1
           python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
-          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 2 --depth 2 --node-budget 350 --max-seconds 0.025 --output /tmp/shared_sprt_smoke.json
+          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 2 --depth 2 --node-budget 350 --max-seconds 1 --output /tmp/shared_sprt_smoke.json
+          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 4 --depth 2 --node-budget 350 --max-seconds 1 --resume /tmp/shared_sprt_smoke.json --output /tmp/shared_sprt_smoke.json
+          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 4 --depth 2 --node-budget 350 --max-seconds 1 --output /tmp/shared_sprt_fresh.json
           python - <<'PY'
           import json
-          report = json.load(open("/tmp/shared_sprt_smoke.json"))
-          assert report["games_played"] == 4
-          assert 0 <= report["score_rate"] <= 1
-          assert report["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
+          resumed = json.load(open("/tmp/shared_sprt_smoke.json"))
+          fresh = json.load(open("/tmp/shared_sprt_fresh.json"))
+          assert resumed["games_played"] == 8
+          assert resumed["pair_scores"] == fresh["pair_scores"], "Resume must preserve exact paired sequence"
+          assert resumed["rng_state"] == fresh["rng_state"], "Resume lost random stream position"
+          assert 0 <= resumed["score_rate"] <= 1
+          assert resumed["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
           PY
       - name: 依明確指令啟動正式自我對弈
         if: ${{ !cancelled() && contains(github.event.head_commit.message, '[啟動自我對弈]') }}
