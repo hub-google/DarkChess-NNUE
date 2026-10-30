@@ -72,6 +72,11 @@ class ContinuousResearchTests(unittest.TestCase):
         self.assertLess(production.index("cp models/challenger.nnue models/research.nnue"),
                         production.index("node .shared-build/src/workers/sprt_shared.js"))
         self.assertIn("if: steps.validate.outputs.passed == 'true'", workflow)
+        self.assertIn("id: production_probe", workflow)
+        self.assertIn("--profile production", workflow)
+        self.assertIn("--probe-only", workflow)
+        self.assertIn("steps.production_probe.outcome == 'success'", workflow)
+        self.assertIn("production_full_depth_moves", workflow)
         self.assertNotIn("cp training_snapshot_candidate.json .github/training_last_snapshot.json\n          git config", workflow.split("- name: 保存模型驗證與訓練紀錄")[1])
 
 
