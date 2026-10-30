@@ -322,6 +322,52 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  bootstrap-research:
+    name: 初始化研究線並驗證模型回讀（非新訓練）
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[bootstrap-research]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝研究模型完整性驗證套件
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: 以已驗證冠軍初始化研究模型並提交
+        run: |
+          set -euo pipefail
+          if [ -f models/research.nnue ]; then
+            python -u src/training/research_checkpoint.py --checkpoint models/research.nnue
+            echo "[Research] An existing research model was validated; no replacement."
+            exit 0
+          fi
+          python -u src/training/research_checkpoint.py --checkpoint models/champion.nnue
+          cp models/champion.nnue models/research.nnue
+          python -u src/training/research_checkpoint.py --checkpoint models/research.nnue
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/research.nnue
+          git commit -m "chore: initialize persistent research lineage from champion"
+          git fetch origin master
+          # Guard against bootstrapping from a stale champion or overwriting
+          # a research model produced by an overlapping real training run.
+          if [ "$(git show HEAD^:models/champion.nnue | sha256sum | cut -d' ' -f1)" != "$(git show origin/master:models/champion.nnue | sha256sum | cut -d' ' -f1)" ]; then
+            echo "::error::Champion changed since bootstrap began; refusing stale research seed."
+            exit 1
+          fi
+          if git cat-file -e origin/master:models/research.nnue 2>/dev/null; then
+            echo "::error::Research checkpoint already exists on master; refusing to overwrite."
+            exit 1
+          fi
+          git rebase origin/master
+          git push origin HEAD:master
+          echo "[Research] Initial checkpoint persisted in GitHub master. This is a champion copy, not a new training result."
+
   train-and-promote:
     # An explicit [train-now] commit opts into one production training run.
     # Ordinary source pushes execute only regression CI.
