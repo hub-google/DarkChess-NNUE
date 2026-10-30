@@ -492,6 +492,29 @@ jobs:
               --output sprt_results.json
           fi
 
+      - name: 使用正式六層搜尋完成成對棋局健全性測試
+        if: steps.validate.outputs.passed == 'true'
+        id: production_probe
+        timeout-minutes: 90
+        run: |
+          # Fast SPRT screens candidates; this probe checks that the exact
+          # production search policy also completes real matched games.
+          # One pair does NOT establish a statistically reliable Elo advantage.
+          node .shared-build/src/workers/sprt_shared.js \
+            --champion validation_models/champion \
+            --challenger validation_models/challenger \
+            --pairs 1 \
+            --profile production \
+            --probe-only \
+            --output production_probe_results.json
+          python - <<'PY'
+          import json
+          report = json.load(open("production_probe_results.json"))
+          assert report["games_played"] == 2
+          assert report["profile"] == "production"
+          assert report["production_full_depth_moves"] > 0
+          PY
+
       - name: 訓練輔助走法預測模型
         if: steps.validate.outputs.passed == 'true'
         continue-on-error: true
@@ -513,6 +536,7 @@ jobs:
           path: |
             training_cache/manifest.json
             sprt_results.json
+            production_probe_results.json
             symmetry_report.json
             models/challenger.nnue
             models/research.nnue
@@ -521,7 +545,7 @@ jobs:
           retention-days: 30
 
       - name: 升級通過驗證的新模型
-        if: steps.validate.outputs.passed == 'true'
+        if: steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success'
         run: |
           # Keep only the active champion in the repository. Do not
           # accumulate older weight snapshots in models/archive.
@@ -569,7 +593,7 @@ jobs:
           fi
 
       - name: 模型真正升級後才更新網站
-        if: steps.validate.outputs.passed == 'true'
+        if: steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
