@@ -71,6 +71,7 @@ function play(first: DarkChessEngine, second: DarkChessEngine, bag: Piece[], ope
       ? engine.analyze(board, {
           maxDepth: targetDepth, requireFullDepth: true,
           innerMoveLimit: targetDepth === 6 ? 2 : undefined,
+          chanceSamples: targetDepth === 6 ? 3 : undefined,
         })
       : engine.analyze(board, {maxDepth: config.depth, nodeBudget: config.nodes, maxMs: config.ms})
     if (config.profile === 'production') {
