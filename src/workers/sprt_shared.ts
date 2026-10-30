@@ -2,13 +2,13 @@
  * Only the referee owns the hidden shuffled bag. Search sees public counts.
  * No incomplete games are ever silently counted as draws.
  */
-import {writeFileSync, appendFileSync} from 'node:fs'
+import {writeFileSync, appendFileSync, readFileSync} from 'node:fs'
 import {Board, Color, Piece} from '../../frontend/src/engine/board'
 import {DarkChessEngine} from '../../frontend/src/engine/search'
 import {loadNNUE} from './model_runtime'
 
 type Config = {pairs: number; depth: number; nodes: number; ms: number; elo0: number; elo1: number;
-  alpha: number; beta: number; seed: number; maxRetries: number; output: string; champion: string; challenger: string}
+  alpha: number; beta: number; seed: number; maxRetries: number; output: string; resume: string; champion: string; challenger: string}
 const arg = (name: string, fallback: string): string => {
   const i = process.argv.indexOf('--' + name)
   return i >= 0 ? process.argv[i + 1] : fallback
@@ -24,7 +24,7 @@ const config: Config = {
   elo0: number('elo0', -20), elo1: number('elo1', 20),
   alpha: number('alpha', 0.05), beta: number('beta', 0.05),
   seed: number('seed', 20260731), maxRetries: number('max-retries', 8),
-  output: arg('output', 'sprt_results.json'),
+  output: arg('output', 'sprt_results.json'), resume: arg('resume', ''),
   champion: arg('champion', 'validation_models/champion'),
   challenger: arg('challenger', 'validation_models/challenger')
 }
@@ -83,8 +83,41 @@ function main() {
   const lower = Math.log(config.beta / (1 - config.alpha))
   let score = 0, llr = 0, played = 0, incomplete = 0
   let decision = 'UNDECIDED'
-  const pair_scores: number[] = []
-  for (let i = 0; i < config.pairs; i++) {
+  let pair_scores: number[] = []
+  if (config.resume) {
+    const saved = JSON.parse(readFileSync(config.resume, 'utf8')) as Record<string, unknown>
+    const same = (key: string, expected: unknown) => saved[key] === expected
+    if (!same('decision', 'UNDECIDED') ||
+        !same('champion_model', championModel.version) ||
+        !same('challenger_model', challengerModel.version) ||
+        !same('elo0', config.elo0) || !same('elo1', config.elo1) ||
+        !same('alpha', config.alpha) || !same('beta', config.beta) ||
+        !same('depth', config.depth) || !same('node_budget', config.nodes) ||
+        !same('max_seconds', config.ms / 1000) || !same('seed', config.seed) ||
+        !same('max_retries', config.maxRetries) ||
+        !Number.isInteger(Number(saved.rng_state)) ||
+        !Number.isInteger(Number(saved.pairs_played)) ||
+        !Array.isArray(saved.pair_scores) ||
+        saved.pair_scores.length !== saved.pairs_played ||
+        Number(saved.pairs_played) < 1 || Number(saved.pairs_played) >= config.pairs) {
+      throw new Error('SPRT resume mismatch: model, test configuration or saved progress changed')
+    }
+    pair_scores = saved.pair_scores as number[]
+    if (!pair_scores.every(x => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= 2)) {
+      throw new Error('SPRT resume contains invalid paired scores')
+    }
+    seed = Number(saved.rng_state) >>> 0
+    played = pair_scores.length
+    score = pair_scores.reduce((a, b) => a + b, 0)
+    llr = pair_scores.reduce((a, b) => a + llrForPair(b), 0)
+    incomplete = Number(saved.incomplete_deals_discarded)
+    if (!Number.isSafeInteger(incomplete) || incomplete < 0 ||
+        Math.abs(llr - Number(saved.log_likelihood_ratio)) > 1e-8) {
+      throw new Error('SPRT resume statistical checkpoint is invalid')
+    }
+    console.log('[SPRT] Resuming existing paired experiment: ' + played + ' pairs; previous scores preserved')
+  }
+  for (let i = played; i < config.pairs; i++) {
     let completed = false
     for (let retry = 0; retry < config.maxRetries; retry++) {
       const bag = deal()
@@ -116,6 +149,7 @@ function main() {
     elo0: config.elo0, elo1: config.elo1,
     alpha: config.alpha, beta: config.beta, depth: config.depth,
     node_budget: config.nodes, max_seconds: config.ms / 1000, seed: config.seed,
+    max_retries: config.maxRetries, rng_state: seed >>> 0,
     pair_scores, incomplete_deals_discarded: incomplete,
     champion_model: championModel.version, challenger_model: challengerModel.version,
     note: 'One DarkChessEngine across web, self-play and SPRT. Undecided never promotes.'}

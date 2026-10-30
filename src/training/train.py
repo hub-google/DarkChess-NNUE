@@ -51,8 +51,20 @@ def load_model_file(path):
     return model
 
 
+def select_training_base(research_path, champion_path):
+    """Continue research across runs; bootstrap from champion only once.
+
+    Never silently reset a corrupt research checkpoint to the champion.
+    """
+    if os.path.exists(research_path):
+        print(f"[Research] Continuing from {research_path}.")
+        return research_path
+    print(f"[Research] No research checkpoint yet; bootstrapping from {champion_path}.")
+    return champion_path
+
+
 def initialize_challenger(champion_path):
-    """Continue from champion, upgrading the legacy input layer when needed."""
+    """Continue from the selected checkpoint, upgrading legacy inputs if needed."""
     model = DarkChessNNUE()
     if not os.path.exists(champion_path):
         print("No champion model found; starting a new v2 model.")
@@ -423,7 +435,11 @@ def main():
         "CHAMPION_PATH",
         os.path.join(models_dir, "champion.nnue"),
     )
-    model = initialize_challenger(champion_path)
+    research_path = os.environ.get(
+        "RESEARCH_PATH",
+        os.path.join(models_dir, "research.nnue"),
+    )
+    model = initialize_challenger(select_training_base(research_path, champion_path))
     learning_rate = float(os.environ.get("LEARNING_RATE", "0.0001"))
     optimizer = optim.AdamW(
         model.parameters(),
