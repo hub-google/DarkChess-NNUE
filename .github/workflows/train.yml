@@ -53,6 +53,11 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           BACKFILL_RUN_IDS: "40626539280 40656750983 40696580034 40745528713"
         run: python -u src/workers/backfill_completed_runs.py
+      - name: 補傳完整棋譜後清理 HF 歷史並驗證保留檔案
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/workers/compact_hf_history.py
+
       - name: 完成 HF 實際讀回後啟動新資料模型訓練
         env:
           GH_TOKEN: ${{ github.token }}
@@ -394,9 +399,45 @@ jobs:
           git push origin HEAD:master
           echo "[Research] Initial checkpoint persisted in GitHub master. This is a champion copy, not a new training result."
 
+  hf-replay-consolidation:
+    name: HF 棋譜整併、歷史清理與回讀驗證
+    # A special [hf-cleanup-now] commit cleans existing history without training.
+    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, '[train-now]') || contains(github.event.head_commit.message, '[hf-cleanup-now]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    # Serialize ALL HF mutations: self-play writer, historical backfill, and
+    # training consolidation/squash. Never squash during a competing upload.
+    concurrency:
+      group: darkchess-hf-stage-writer
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安裝 HF 棋譜與歷史清理工具
+        run: pip install huggingface_hub
+      - name: 確定訓練資料快照時間
+        if: ${{ !contains(github.event.head_commit.message, '[hf-cleanup-now]') }}
+        shell: bash
+        run: |
+          NOW_EPOCH=$(date -u +%s)
+          echo "CONSOLIDATION_CUTOFF_EPOCH=$NOW_EPOCH" >> "$GITHUB_ENV"
+          echo "Snapshot cutoff: $(date -u -d "@$NOW_EPOCH" --iso-8601=seconds)"
+      - name: 整併已上傳的完整棋譜並完成 HF 回讀驗證
+        if: ${{ !contains(github.event.head_commit.message, '[hf-cleanup-now]') }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/training/consolidate_buffer.py
+      - name: 上傳成功後清除 HF 舊歷史並核對所有目前檔案
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u src/workers/compact_hf_history.py
+
   train-and-promote:
-    # An explicit [train-now] commit opts into one production training run.
+    # Run CPU training after the short, serialized HF consolidation writer.
     # Ordinary source pushes execute only regression CI.
+    needs: hf-replay-consolidation
     if: github.event_name != 'push' || contains(github.event.head_commit.message, '[train-now]')
     runs-on: ubuntu-latest
     timeout-minutes: 345
@@ -420,22 +461,6 @@ jobs:
 
       - name: 執行程式回歸測試
         run: python -m unittest discover -s test -p "test_*.py" -v
-
-      - name: 確定本次訓練資料範圍
-        shell: bash
-        run: |
-          NOW_EPOCH=$(date -u +%s)
-          # Both scheduled and manually dispatched training snapshot all
-          # uploads already finished when the job starts. Concurrent uploads
-          # with later timestamps are left untouched for the next cycle.
-          CUTOFF_EPOCH=$NOW_EPOCH
-          echo "CONSOLIDATION_CUTOFF_EPOCH=$CUTOFF_EPOCH" >> "$GITHUB_ENV"
-          echo "Snapshot cutoff: $(date -u -d "@$CUTOFF_EPOCH" --iso-8601=seconds)"
-
-      - name: 整併並驗證棋譜資料
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -u src/training/consolidate_buffer.py
 
       - name: 下載私人棋譜資料
         env:
