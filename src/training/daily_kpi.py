@@ -40,7 +40,7 @@ def collect():
     now = datetime.now(ZoneInfo("UTC"))
     current = snap.get("total_games")
     previous = prior.get("total_games")
-    delta = max(0, int(current) - int(previous)) if current is not None and previous is not None else ""
+    delta = (max(0, int(current) - int(previous)) if current is not None and previous is not None and snap.get("ids_sha256") != prior.get("ids_sha256") else "")
     score = sprt.get("score_rate")
     scored = float(score) if isinstance(score, (float, int)) and sprt.get("games_played", 0) else None
     promotion = os.environ.get("KPI_PROMOTED", "unknown")
