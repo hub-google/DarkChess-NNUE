@@ -253,6 +253,14 @@ jobs:
               raise SystemExit(f"::error::Missing worker Artifacts: {missing}; stop before next round.")
           print(f"[HF Writer] VERIFIED all 15 worker Artifacts for run {run_id}.")
           PY
+      - name: HF 上傳成功後清空舊版本歷史並驗證現存棋譜
+        if: ${{ success() && !cancelled() && steps.upload.outputs.uploaded == 'true' }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euo pipefail
+          python -u src/workers/compact_hf_history.py
+
       - name: 雲端上傳失敗時保留原始資料
         if: ${{ failure() && !cancelled() }}
         uses: actions/upload-artifact@v4
