@@ -1,0 +1,1 @@
+date_taipei,run_id,recorded_at_utc,replay_games,new_games_estimate,train_valid_games,train_samples,training_loss_last100,validation_loss,sprt_games,sprt_score_pct,sprt_elo_estimate,sprt_decision,sprt_champion,sprt_challenger,production_probe_status,champion_promotion,notes
