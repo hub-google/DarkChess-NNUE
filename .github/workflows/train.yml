@@ -92,6 +92,32 @@ jobs:
           pip install -r requirements.txt
       - name: 驗證對弈、搜尋、棋譜與訓練
         run: python -m unittest discover -s test -p "test_*.py" -v
+      - name: 將快速 KPI 每日表格儲存到 Git 倉庫
+        if: ${{ always() && !cancelled() && github.event_name != 'push' }}
+        env:
+          KPI_PROMOTED: ${{ steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success' && 'true' || 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u src/training/daily_kpi.py --output metrics/daily_kpi.csv
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add metrics/daily_kpi.csv
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "data: update daily training KPI"
+          for attempt in 1 2 3; do
+            git fetch origin master
+            if ! git rebase origin/master; then
+              git rebase --abort || true
+              echo "::error::KPI history conflict; refusing to overwrite existing records."
+              exit 1
+            fi
+            if git push origin HEAD:master; then exit 0; fi
+            sleep "$((attempt * 3))"
+          done
+          echo "::error::Could not publish daily KPI table."
+          exit 1
+
       - name: 清理已完成的舊執行紀錄
         if: ${{ always() && !cancelled() }}
         continue-on-error: true
@@ -496,7 +522,9 @@ jobs:
           COLOR_SWAP_AUGMENTATION: "true"
           SYMMETRY_CONSISTENCY_WEIGHT: "0.02"
           SYMMETRY_CONSISTENCY_EVERY: "4"
-        run: python -u src/training/train.py
+        run: |
+          set -o pipefail
+          python -u src/training/train.py 2>&1 | tee training_kpi.log
 
       - name: 驗證並保存持續訓練的研究模型
         if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
