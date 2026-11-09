@@ -214,15 +214,16 @@ jobs:
             exit 0
           fi
           # One HF writer per run; no CPU worker can write to HF.
-          for cycle in 1 2; do
+          # Retry transient HF/network errors without skipping validation or losing artifacts.
+          for cycle in 1 2 3 4; do
             if python -u src/workers/upload_batch.py; then
               echo "[HF Writer] Single-run batch uploaded and verified."
               echo "uploaded=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            if [ "$cycle" -lt 2 ]; then
-              echo "::warning::HF writer failed; retrying preserved artifacts."
-              sleep 30
+            if [ "$cycle" -lt 4 ]; then
+              echo "::warning::HF writer failed (attempt $cycle/4); retrying preserved artifacts."
+              sleep "$((cycle * 30))"
             fi
           done
           echo "::error::HF upload or remote read-back failed; original artifacts are retained. No next round will start."
