@@ -97,32 +97,6 @@ jobs:
           pip install -r requirements.txt
       - name: 驗證對弈、搜尋、棋譜與訓練
         run: python -m unittest discover -s test -p "test_*.py" -v
-      - name: 將快速 KPI 每日表格儲存到 Git 倉庫
-        if: ${{ always() && !cancelled() && github.event_name != 'push' }}
-        env:
-          KPI_PROMOTED: ${{ steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success' && 'true' || 'false' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -u src/training/daily_kpi.py --output metrics/daily_kpi.csv
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add metrics/daily_kpi.csv
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "data: update daily training KPI"
-          for attempt in 1 2 3; do
-            git fetch origin master
-            if ! git rebase origin/master; then
-              git rebase --abort || true
-              echo "::error::KPI history conflict; refusing to overwrite existing records."
-              exit 1
-            fi
-            if git push origin HEAD:master; then exit 0; fi
-            sleep "$((attempt * 3))"
-          done
-          echo "::error::Could not publish daily KPI table."
-          exit 1
-
       - name: 清理已完成的舊執行紀錄
         if: ${{ always() && !cancelled() }}
         continue-on-error: true
@@ -696,6 +670,7 @@ jobs:
           retention-days: 30
 
       - name: 升級通過驗證的新模型
+        id: promote
         if: steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success'
         run: |
           # Keep only the active champion in the repository. Do not
@@ -772,3 +747,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/prune_action_runs.py --scope all
 
+      # Collect real metrics in the actual training job, not push-only CI.
+      # A separate worktree prevents uncommitted training scratch files from
+      # making git rebase/push fail; never overwrite a concurrently updated model.
+      - name: 將當日實際訓練與對弈 KPI 寫回 Git
+        if: ${{ always() && !cancelled() }}
+        shell: bash
+        env:
+          KPI_PROMOTED: ${{ steps.promote.outcome == 'success' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          python -u src/training/daily_kpi.py --output metrics/daily_kpi.csv
+          KPI_SOURCE="$PWD/metrics/daily_kpi.csv"
+          KPI_WORKTREE="$(mktemp -d)"
+          git fetch origin master
+          git worktree add -B daily-kpi-publish "$KPI_WORKTREE" origin/master
+          mkdir -p "$KPI_WORKTREE/metrics"
+          cp "$KPI_SOURCE" "$KPI_WORKTREE/metrics/daily_kpi.csv"
+          git -C "$KPI_WORKTREE" config user.name "github-actions[bot]"
+          git -C "$KPI_WORKTREE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$KPI_WORKTREE" add metrics/daily_kpi.csv
+          if git -C "$KPI_WORKTREE" diff --cached --quiet; then
+            echo "[KPI] Today's report already matches Git; nothing to publish."
+            exit 0
+          fi
+          git -C "$KPI_WORKTREE" commit -m "data: record real daily training KPI"
+          for attempt in 1 2 3; do
+            git -C "$KPI_WORKTREE" fetch origin master
+            if ! git -C "$KPI_WORKTREE" rebase origin/master; then
+              git -C "$KPI_WORKTREE" rebase --abort || true
+              echo "::error::KPI conflict; preserving previous published records."
+              exit 1
+            fi
+            if git -C "$KPI_WORKTREE" push origin HEAD:master; then
+              echo "[KPI] Published daily KPI report."
+              exit 0
+            fi
+            sleep "$((attempt * 3))"
+          done
+          echo "::error::Could not publish daily KPI after three retries."
+          exit 1
