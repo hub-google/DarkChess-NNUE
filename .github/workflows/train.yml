@@ -458,6 +458,9 @@ jobs:
           print("[Training] Downloaded authenticated private replay snapshot.")
           PY
 
+      - name: 保留訓練前快照供每日 KPI 計算真實新增棋譜
+        run: cp .github/training_last_snapshot.json /tmp/previous_training_snapshot.json
+
       - name: 確認是否真的新增有效棋譜
         id: new_replays
         run: |
