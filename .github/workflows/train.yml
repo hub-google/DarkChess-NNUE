@@ -719,10 +719,13 @@ jobs:
               echo "::error::Could not publish validated champion after three attempts."
               exit 1
             fi
+            echo "promoted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 模型真正升級後才更新網站
-        if: steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success'
+        if: steps.promote.outputs.promoted == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -757,7 +760,7 @@ jobs:
         if: ${{ always() && !cancelled() }}
         shell: bash
         env:
-          KPI_PROMOTED: ${{ steps.promote.outcome == 'success' && 'true' || 'false' }}
+          KPI_PROMOTED: ${{ steps.promote.outputs.promoted == 'true' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           python -u src/training/daily_kpi.py --output metrics/daily_kpi.csv
