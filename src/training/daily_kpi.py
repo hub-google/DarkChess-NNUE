@@ -31,7 +31,8 @@ def estimate_elo(score):
 
 def collect():
     snap = read_json("training_snapshot_candidate.json")
-    prior = read_json(".github/training_last_snapshot.json")
+    # Training updates the marker before KPI reporting; compare against the saved pre-run snapshot.
+    prior = read_json("/tmp/previous_training_snapshot.json") or read_json(".github/training_last_snapshot.json")
     cache = read_json("training_cache/manifest.json")
     sprt = read_json("sprt_results.json")
     probe = read_json("production_probe_results.json")
@@ -40,7 +41,15 @@ def collect():
     now = datetime.now(ZoneInfo("UTC"))
     current = snap.get("total_games")
     previous = prior.get("total_games")
-    delta = (max(0, int(current) - int(previous)) if current is not None and previous is not None and snap.get("ids_sha256") != prior.get("ids_sha256") else "")
+    # Only the positive net increase is exactly observable from two aggregate snapshots.
+    # Equal counts with different IDs (rolling replay buffers) do not imply zero new games.
+    delta = ""
+    if current is not None and previous is not None:
+        current, previous = int(current), int(previous)
+        if current > previous:
+            delta = current - previous
+        elif snap.get("ids_sha256") == prior.get("ids_sha256"):
+            delta = 0
     score = sprt.get("score_rate")
     scored = float(score) if isinstance(score, (float, int)) and sprt.get("games_played", 0) else None
     promotion = os.environ.get("KPI_PROMOTED", "unknown")
@@ -63,7 +72,7 @@ def collect():
         "sprt_challenger": sprt.get("challenger_model", ""),
         "production_probe_status": probe_status,
         "champion_promotion": promotion,
-        "notes": "No additional match; Elo is an unadjusted estimate; blank means unavailable.",
+        "notes": "No additional match; new games is net increase only, blank if unknown; Elo is an unadjusted estimate.",
     }
 
 
