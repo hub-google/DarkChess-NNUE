@@ -4,18 +4,7 @@ run-name: ${{ github.event_name == 'push' && !contains(github.event.head_commit.
 # Independent daily training is resilient to incomplete worker matrices.
 # Manual production runs may additionally trigger through workflow_run.
 on:
-  schedule:
-    - cron: "41 3 * * *"
-  workflow_dispatch:
-  # Code-only CI; do not launch expensive self-play/training on pushes.
-  push:
-    branches: [master]
-    paths:
-      - ".github/workflows/*.yml"
-      - ".github/scripts/**"
-      - "src/**"
-      - "frontend/src/**"
-      - "test/**"
+  workflow_dispatch:  # 暫停自動執行，僅保留手動啟動
 
 concurrency:
   # Serialize training runs, but do not block self-play uploads. Consolidation
