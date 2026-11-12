@@ -15,9 +15,6 @@ on:
         type: boolean
         default: true
         required: false
-  schedule:
-    - cron: "23 * * * *"      # hourly recovery watchdog
-    - cron: "43 3 1 * *"      # monthly Actions keepalive
 
 permissions:
   contents: write
