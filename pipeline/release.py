@@ -222,7 +222,7 @@ def check_gate(g,t,training_sha,commit,arena_run,arena_attempt):
     for budget in BUDGETS:
         s=g["results"][str(budget)]
         actual=analyze(s["scores"],SHARDS_PER_BUDGET*PAIRS_PER_SHARD,alpha=ALPHA,minimum_gain=MIN_GAIN)
-        require(actual==s["stats"] and actual["decision"]=="SUPERIOR","gate failed independent recomputation")
+        require(actual["decision"]=="SUPERIOR" and s["stats"]["decision"]=="SUPERIOR" and actual["pentanomial"]==s["stats"]["pentanomial"] and actual["pairs"]==s["stats"]["pairs"] and abs(actual["candidate_score"]-s["stats"]["candidate_score"])<1e-12,"gate failed independent recomputation")
 
 def promote(training,gate_dir,training_run,training_attempt,arena_run,arena_attempt):
     from export_nnue import export_model

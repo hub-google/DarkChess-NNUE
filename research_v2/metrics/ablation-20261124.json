@@ -1,0 +1,118 @@
+{
+  "source_run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45331410655",
+  "source_commit": "3526d9757fb953cee40eef3105f82df58f98c1f1",
+  "verified_games": 1280,
+  "results": {
+    "base-A": {
+      "pairs": 128,
+      "planned_pairs": 128,
+      "pentanomial": [
+        11,
+        29,
+        43,
+        30,
+        15
+      ],
+      "candidate_score": 0.517578125,
+      "score_interval_hoeffding": [
+        0.3737151616874147,
+        0.6614410883125853
+      ],
+      "relative_elo_descriptive": 12.219568270856852,
+      "one_sided_exchangeability_p": 0.26605421920428707,
+      "alpha": 0.01,
+      "minimum_score_gain": 0,
+      "decision": "INCONCLUSIVE",
+      "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+    },
+    "base-B": {
+      "pairs": 128,
+      "planned_pairs": 128,
+      "pentanomial": [
+        13,
+        28,
+        47,
+        24,
+        16
+      ],
+      "candidate_score": 0.50390625,
+      "score_interval_hoeffding": [
+        0.3600432866874147,
+        0.6477692133125853
+      ],
+      "relative_elo_descriptive": 2.714395737316835,
+      "one_sided_exchangeability_p": 0.46936198723988426,
+      "alpha": 0.01,
+      "minimum_score_gain": 0,
+      "decision": "INCONCLUSIVE",
+      "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+    },
+    "base-C": {
+      "pairs": 128,
+      "planned_pairs": 128,
+      "pentanomial": [
+        17,
+        24,
+        42,
+        33,
+        12
+      ],
+      "candidate_score": 0.498046875,
+      "score_interval_hoeffding": [
+        0.3541839116874147,
+        0.6419098383125853
+      ],
+      "relative_elo_descriptive": -1.3571771589357418,
+      "one_sided_exchangeability_p": 0.5602259837159632,
+      "alpha": 0.01,
+      "minimum_score_gain": 0,
+      "decision": "INCONCLUSIVE",
+      "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+    },
+    "A-B": {
+      "pairs": 128,
+      "planned_pairs": 128,
+      "pentanomial": [
+        17,
+        34,
+        50,
+        23,
+        4
+      ],
+      "candidate_score": 0.427734375,
+      "score_interval_hoeffding": [
+        0.2838714116874147,
+        0.5715973383125853
+      ],
+      "relative_elo_descriptive": -50.56940220559645,
+      "one_sided_exchangeability_p": 0.9994130285461275,
+      "alpha": 0.01,
+      "minimum_score_gain": 0,
+      "decision": "INCONCLUSIVE",
+      "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+    },
+    "A-C": {
+      "pairs": 128,
+      "planned_pairs": 128,
+      "pentanomial": [
+        10,
+        34,
+        42,
+        30,
+        12
+      ],
+      "candidate_score": 0.5,
+      "score_interval_hoeffding": [
+        0.3561370366874147,
+        0.6438629633125853
+      ],
+      "relative_elo_descriptive": 0,
+      "one_sided_exchangeability_p": 0.5322121311595679,
+      "alpha": 0.01,
+      "minimum_score_gain": 0,
+      "decision": "INCONCLUSIVE",
+      "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+    }
+  },
+  "decision": "No promotion, keep old replays; A provisional new-only recipe for next experiment, not demonstrated superiority."
+}

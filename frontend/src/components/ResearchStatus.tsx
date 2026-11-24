@@ -4,7 +4,7 @@ type Evidence = {
   engineMatch:{run:string;games:number;budget:number;score:number;decision:string}[]
   selfPlay:{run:string;games:number;min25:number;max25:number;min100:number;max100:number}
   browser:{run:string;positions:number;rootScores:number;maxError:number}
-  training:{run:string;arms:string[];updatesPerArm:number;state:string}
+  training:{run:string;arms:string[];updatesPerArm:number;state:string;games?:number;scores?:{label:string;score:number}[]}
 }
 export function ResearchStatus(){
  const [data,setData]=useState<Evidence|null>(null)
@@ -36,6 +36,7 @@ export function ResearchStatus(){
     <span><small>新舊資料訓練消融</small><strong>{data.training.arms.length} 組</strong></span>
     <span className="metric-detail">{data.training.state}</span>
    </a>
+   {data.training.scores?.map(r=><div className="metric-row" key={r.label}><span><small>{r.label}</small><strong>{(r.score*100).toFixed(2)}%</strong></span><span className="metric-detail">對既有冠軍 · 未通過門檻</span></div>)}
    <p className="honesty">這是研究快照，並非目前正式冠軍的棋力或即時資料總量。點選各列查閱原始 Actions。</p>
   </>}
  </section>

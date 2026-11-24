@@ -64,20 +64,15 @@ class ContinuousResearchTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 validate_research_checkpoint(Path(temp) / "missing.nnue")
 
-    def test_workflow_commits_model_and_marker_together_before_sprt(self):
+    def test_production_keeps_research_and_unvalidated_weights_out_of_master(self):
         workflow = (ROOT / ".github/workflows/train.yml").read_text(encoding="utf-8")
-        self.assertIn("git add models/research.nnue .github/training_last_snapshot.json", workflow)
-        self.assertIn("python -u src/training/research_checkpoint.py", workflow)
-        production = workflow.split("  train-and-promote:", 1)[1]
-        self.assertLess(production.index("cp models/challenger.nnue models/research.nnue"),
-                        production.index("node .shared-build/src/workers/sprt_shared.js"))
-        self.assertIn("if: steps.validate.outputs.passed == 'true'", workflow)
-        self.assertIn("id: production_probe", workflow)
-        self.assertIn("--profile production", workflow)
-        self.assertIn("--probe-only", workflow)
-        self.assertIn("steps.production_probe.outcome == 'success'", workflow)
-        self.assertIn("production_full_depth_moves", workflow)
-        self.assertNotIn("cp training_snapshot_candidate.json .github/training_last_snapshot.json\n          git config", workflow.split("- name: 保存模型驗證與訓練紀錄")[1])
+        promotion = (ROOT / ".github/workflows/promote.yml").read_text(encoding="utf-8")
+        self.assertIn("pipeline/release.py train", workflow)
+        self.assertIn("v2-candidate-", workflow)
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("models/research.nnue", workflow)
+        self.assertLess(promotion.index("pipeline/release.py promote"),promotion.index("git push origin HEAD:master"))
+        self.assertIn("pipeline/check_source.py",promotion)
 
 
 if __name__ == "__main__":
