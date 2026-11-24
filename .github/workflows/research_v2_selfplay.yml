@@ -1,0 +1,94 @@
+name: 暗棋 V2｜CPU 新棋譜試驗
+run-name: 暗棋 V2｜CPU 新棋譜試驗｜${{ github.run_number }}
+on:
+  push:
+    branches: [research-v2]
+    paths: ['engine/selfplay.cpp','research_v2/native_selfplay_report.py','.github/workflows/research_v2_selfplay.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: v2-native-selfplay-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  games:
+    name: 新棋譜 ${{ matrix.ms }}ms｜${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - {ms: 25, seed: 4102501, games: 48}
+          - {ms: 25, seed: 4102502, games: 48}
+          - {ms: 25, seed: 4102503, games: 48}
+          - {ms: 25, seed: 4102504, games: 48}
+          - {ms: 100, seed: 4110001, games: 24}
+          - {ms: 100, seed: 4110002, games: 24}
+    steps:
+      - uses: actions/checkout@v4
+        name: 取得原生引擎
+      - uses: actions/setup-python@v5
+        name: 設定 Python 獨立裁判
+        with:
+          python-version: '3.11'
+      - name: 驗證模型權重與編譯原生自我對弈
+        run: |
+          python - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          base=Path('frontend/public/models')
+          m=json.loads((base/'champion.json').read_text())
+          b=(base/'champion.bin').read_bytes()
+          h=hashlib.sha256(b).hexdigest()
+          assert m['format']==1 and m['inputSize']==498 and len(b)==m['bytes'] and h==m['sha256']
+          with open(os.environ['GITHUB_ENV'],'a') as f: f.write('MODEL_ID=nnue-'+h[:12]+'\n')
+          PY
+          g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/selfplay.cpp -o /tmp/dc-selfplay
+          pip install numpy numba
+      - name: 生成獨立研究棋譜（不寫 HF）
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          /tmp/dc-selfplay frontend/public/models/champion.bin "$MODEL_ID" ${{ matrix.seed }} ${{ matrix.games }} ${{ matrix.ms }} results/batch.jsonl | tee results/throughput.json
+          gzip -n results/batch.jsonl
+          python -u src/training/validate_replay.py --directory results --min-games ${{ matrix.games }}
+      - uses: actions/upload-artifact@v4
+        name: 保存已驗證研究棋譜及吞吐量
+        with:
+          name: native-selfplay-${{ matrix.seed }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+  report:
+    name: 匯總新棋譜及實際 CPU 吞吐量
+    needs: games
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        name: 取得獨立裁判
+      - uses: actions/setup-python@v5
+        name: 設定 Python
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        name: 下載全部研究分片
+        with:
+          pattern: native-selfplay-*
+          path: batches
+      - name: 驗證全部棋譜、分片及實測摘要
+        run: |
+          pip install numpy numba
+          python research_v2/native_selfplay_report.py batches native_selfplay_summary.json
+          cat native_selfplay_summary.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        name: 保存新棋譜資料集與清單
+        with:
+          name: native-selfplay-dataset
+          path: |
+            batches/
+            native_selfplay_summary.json
+          if-no-files-found: error
+          retention-days: 30

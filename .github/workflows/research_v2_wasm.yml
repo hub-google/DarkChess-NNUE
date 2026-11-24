@@ -3,7 +3,7 @@ run-name: 暗棋 V2｜WASM 瀏覽器驗證｜${{ github.run_number }}
 on:
   push:
     branches: [research-v2]
-    paths: ['engine/**','frontend/src/**','.github/workflows/research_v2_wasm.yml']
+    paths: ['engine/board.hpp','engine/nnue.hpp','engine/search.hpp','engine/wasm_bridge.cpp','engine/build_wasm.sh','engine/browser_wasm_test.cjs','engine/search_corpus.cjs','frontend/src/**','.github/workflows/research_v2_wasm.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,7 +13,7 @@ concurrency:
 jobs:
   wasm:
     name: 同一 C++ 引擎與 Chromium 實戰
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4

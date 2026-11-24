@@ -3,7 +3,7 @@ run-name: 暗棋 V2｜原生棋規及 NNUE｜${{ github.run_number }}
 on:
   push:
     branches: [research-v2]
-    paths: ['engine/**','.github/workflows/research_v2_native.yml']
+    paths: ['engine/board.hpp','engine/nnue.hpp','engine/search.hpp','engine/corpus.cjs','engine/parity.cpp','engine/search_corpus.cjs','engine/search_parity.cpp','.github/workflows/research_v2_native.yml']
   workflow_dispatch:
 permissions:
   contents: read

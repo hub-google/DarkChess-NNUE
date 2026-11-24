@@ -3,7 +3,7 @@ run-name: 暗棋 V2｜基準與資料稽核｜${{ github.run_number }}
 on:
   push:
     branches: [research-v2]
-    paths: ['research_v2/**', 'RESEARCH_CHARTER.md', '.github/workflows/research_v2_baseline.yml']
+    paths: ['research_v2/audit.py','research_v2/corpus.cjs','research_v2/movegen.cpp','.github/workflows/research_v2_baseline.yml']
   workflow_dispatch:
 permissions:
   contents: read
