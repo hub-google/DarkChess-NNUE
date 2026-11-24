@@ -96,7 +96,7 @@ function App() {
       refresh()
     }
     worker.addEventListener('message', onReply)
-    worker.postMessage({id, board: gameRef.current, limits: {
+    worker.postMessage({id, board: gameRef.current.publicClone(), limits: {
       maxDepth: 12, nodeBudget: 25000, maxMs: 2500,
     }})
     return () => { cancelled = true; worker.removeEventListener('message', onReply) }

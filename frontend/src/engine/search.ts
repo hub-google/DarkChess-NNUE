@@ -153,10 +153,12 @@ export class DarkChessEngine {
   constructor(private readonly evaluator?: Evaluator) {}
 
   evaluate(board: Board): number {
-    return this.evaluator ? this.evaluator(board) : fromMaterial(board)
+    const publicBoard = board.publicClone()
+    return this.evaluator ? this.evaluator(publicBoard) : fromMaterial(publicBoard)
   }
 
   analyze(board: Board, limits: SearchLimits = {}): SearchAnalysis {
+  board = board.publicClone()
   const available = board.legalMoves()
   if (!available.length) return { move: undefined, depth: 0, nodes: 0, elapsedMs: 0, rootValues: {}, value: 0 }
   const maxDepth = Math.max(1, Math.floor(limits.maxDepth ?? 3))

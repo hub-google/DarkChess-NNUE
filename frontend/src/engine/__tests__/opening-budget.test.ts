@@ -26,3 +26,17 @@ describe('first flip budget handling', () => {
       .toEqual(e.analyze(b,{maxDepth:1,requireFullDepth:true}).rootValues)
   })
 })
+
+describe('public search boundary',()=>{
+  it('does not pass true hidden identities to custom evaluators',()=>{
+    const b=new Board(false)
+    const original=b.hidden.slice()
+    const engine=new DarkChessEngine(state=>{
+      for(let i=0;i<32;i++) if(state.grid[i]===Piece.HIDDEN) expect(state.hidden[i]).toBe(Piece.HIDDEN)
+      return 0
+    })
+    engine.evaluate(b)
+    engine.analyze(b,{maxDepth:1,requireFullDepth:true})
+    expect(b.hidden).toEqual(original)
+  })
+})

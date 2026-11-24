@@ -90,6 +90,13 @@ export class Board {
     return b
   }
 
+  /** AI receives only public information. Referee identities never cross this boundary. */
+  publicClone() {
+    const b = this.clone()
+    b.hidden = Array(32).fill(Piece.HIDDEN)
+    return b
+  }
+
   getPiece(r: number, c: number) { return this.grid[r * 8 + c] }
 
   flipPiece(r: number, c: number) {

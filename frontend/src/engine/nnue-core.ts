@@ -71,3 +71,46 @@ export function extractFeatures(board: Board) {
   return features
 }
 
+
+/** One format contract for browser and native Node transport. */
+export type NNUEManifest = {
+  format: number; inputSize: number; bytes: number; sha256: string
+  tensors: Record<string, TensorInfo>
+}
+const tensorSchema = [
+  ['fc1.weight', [256,498]], ['fc1.bias', [256]],
+  ['fc2.weight', [32,256]], ['fc2.bias', [32]],
+  ['fc3.weight', [1,32]], ['fc3.bias', [1]],
+] as const
+export function validateNNUEManifest(input: unknown): NNUEManifest {
+  if (typeof input !== 'object' || input === null) throw new Error('Invalid NNUE manifest')
+  const m = input as NNUEManifest
+  if (m.format !== 1 || m.inputSize !== 498 || typeof m.sha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(m.sha256) || !m.tensors) throw new Error('Unsupported NNUE manifest')
+  let offset = 0
+  for (const [key,shape] of tensorSchema) {
+    const t = m.tensors[key]
+    const length = Array.from(shape).reduce((a,b)=>a*b,1)
+    if (!t || !Array.isArray(t.shape) || t.shape.length !== shape.length ||
+        !t.shape.every((v,i)=>v === shape[i]) || t.offset !== offset || t.length !== length)
+      throw new Error('Invalid NNUE tensor: ' + key)
+    offset += 4*length
+  }
+  if (m.bytes !== offset) throw new Error('Invalid NNUE manifest byte count')
+  return m
+}
+export function decodeNNUE(input: unknown, bytes: Uint8Array, actualHash: string): BrowserNNUE {
+  const m = validateNNUEManifest(input)
+  if (bytes.byteLength !== m.bytes || actualHash !== m.sha256) throw new Error('NNUE binary checksum/size mismatch')
+  const view = new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength)
+  const tensors = tensorSchema.map(([key])=>{
+    const t = m.tensors[key], result = new Float32Array(t.length)
+    for (let i=0;i<t.length;i++){
+      const value = view.getFloat32(t.offset+4*i,true)
+      if (!Number.isFinite(value)) throw new Error('Non-finite NNUE weight: '+key)
+      result[i]=value
+    }
+    return result
+  })
+  return new BrowserNNUE(m.sha256.slice(0,12),tensors[0],tensors[1],tensors[2],tensors[3],tensors[4],tensors[5])
+}
