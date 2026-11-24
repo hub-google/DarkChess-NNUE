@@ -30,13 +30,23 @@ jobs:
           set -euo pipefail
           g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/parity.cpp -o /tmp/dc-parity
           /tmp/dc-parity frontend/public/models/champion.bin < engine/corpus.txt | tee engine/parity.json
+      - name: 驗證機率搜尋根節點、預算與合法 fallback
+        run: |
+          set -euo pipefail
+          node engine/search_corpus.cjs
+          g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/search_parity.cpp -o /tmp/dc-search
+          /tmp/dc-search frontend/public/models/champion.bin < engine/search_corpus.txt | tee engine/search_parity.json
       - name: 紀錄實測結果
         run: |
           echo '## C++ 逐手等價與 NNUE 誤差' >> "$GITHUB_STEP_SUMMARY"
           echo '只代表研究核心正確性，不代表完整棋力或正式部署。' >> "$GITHUB_STEP_SUMMARY"
           cat engine/parity.json >> "$GITHUB_STEP_SUMMARY"
+          echo '## 機率搜尋根估值' >> "$GITHUB_STEP_SUMMARY"
+          cat engine/search_parity.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: native-parity
-          path: engine/parity.json
+          path: |
+            engine/parity.json
+            engine/search_parity.json
           if-no-files-found: error
