@@ -81,7 +81,7 @@ async function main(){
    if(!board.isOver)throw Error('incomplete game');
    const score=board.draw?0.5:((board.winner===color?first:1-first)===1?1:0);
    const id='v2-arena-'+seed+'-'+pair+'-'+first;
-   records.push({id,ver:'v2.1.0-perpetual-chase',hid:bag,mov:history.map(h=>h[0]),res:board.draw?0:board.winner===0?1:-1,ply:history.length});
+   records.push({id,ver:'v2.1.0-perpetual-chase',hid:bag.map(p=>p-1),mov:history.map(h=>h[0]),res:board.draw?0:board.winner===0?1:-1,ply:history.length});
    return {first,score,plies:board.ply,id};
   }
   for(let i=0;i<pairs;i++){
