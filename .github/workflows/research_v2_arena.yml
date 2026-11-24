@@ -1,0 +1,57 @@
+name: 暗棋 V2｜競技場驗證
+run-name: 暗棋 V2｜競技場驗證｜${{ github.run_number }}
+on:
+  push:
+    branches: [research-v2]
+    paths: ['arena/**', '.github/workflows/research_v2_arena.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: research-v2-arena-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  aa:
+    name: 配對統計與相同模型實機測試
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        name: 取得研究程式
+      - uses: actions/setup-node@v4
+        name: 設定 Node
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        name: 設定 Python
+        with:
+          python-version: '3.11'
+      - name: 驗證配對統計函式
+        run: python -m unittest discover -s arena -p 'test_*.py' -v
+      - name: 編譯舊版基準引擎
+        run: |
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 相同冠軍模型換邊對戰八組
+        run: node arena/match.cjs --pairs 8 --ms 10 --seed 19660217 --output arena/aa.json
+      - name: 產出固定樣本配對統計（流程驗證非棋力驗收）
+        run: |
+          python arena/pair_stats.py arena/aa.json --output arena/aa_stats.json
+          python - <<'PY'
+          import os,json
+          from pathlib import Path
+          r=json.loads(Path('arena/aa.json').read_text())
+          s=json.loads(Path('arena/aa_stats.json').read_text())
+          assert len(r['pair_scores'])==8 and not r['incomplete_games']
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write(f"## A/A 實機流程測試\n\n- 完成配對：{s['pairs']}\n- 得分率：{s['candidate_score']:.2%}\n- 五項分布：{s['pentanomial']}\n- 僅驗證流程，不能判定棋力或統計錯誤率。\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        name: 保存實機對戰結果
+        if: always()
+        with:
+          name: v2-aa
+          path: |
+            arena/aa.json
+            arena/aa_stats.json
+          if-no-files-found: warn
