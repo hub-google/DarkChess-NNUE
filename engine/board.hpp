@@ -104,7 +104,10 @@ struct Board {
   return attacks(a,b,grid,occupancy(grid));
  }
  void update_chase(int mover,int moved,bool irreversible){
-  auto old=std::move(threats);auto old_pending=std::move(pending);
+  auto old=std::move(threats);
+  const bool had_pending=pending.has_value();
+  Chase old_pending{};
+  if(had_pending)old_pending=std::move(*pending);
   threats.clear();pending.reset();if(irreversible)return;
   int square=square_of(moved);if(square<0)return;
   Mask occ=occupancy(grid);
@@ -114,8 +117,8 @@ struct Board {
    if(a>=0&&!attacks(a,square,grid,occ)){pending=t;pending->route.push_back(square);return;}
   }
   for(int b=0;b<32;++b)if(attacks(square,b,grid,occ)){
-   int target=token[b];bool same=old_pending&&old_pending->attacker==moved&&old_pending->target==target&&old_pending->chaser==mover;
-   threats.push_back({moved,target,same?old_pending->count+1:1,mover,same?old_pending->route:std::vector<int>{b}});
+   int target=token[b];bool same=had_pending&&old_pending.attacker==moved&&old_pending.target==target&&old_pending.chaser==mover;
+   threats.push_back({moved,target,same?old_pending.count+1:1,mover,same?old_pending.route:std::vector<int>{b}});
   }
  }
  // Reveal is mandatory for flips and forbidden for deterministic moves.
