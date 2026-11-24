@@ -90,7 +90,8 @@ export function validateNNUEManifest(input: unknown): NNUEManifest {
   let offset = 0
   for (const [key,shape] of tensorSchema) {
     const t = m.tensors[key]
-    const length = Array.from(shape).reduce((a,b)=>a*b,1)
+    let length: number = 1
+    for (const dimension of shape) length *= dimension
     if (!t || !Array.isArray(t.shape) || t.shape.length !== shape.length ||
         !t.shape.every((v,i)=>v === shape[i]) || t.offset !== offset || t.length !== length)
       throw new Error('Invalid NNUE tensor: ' + key)
