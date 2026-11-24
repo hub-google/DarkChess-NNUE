@@ -1,0 +1,43 @@
+{
+  "asOf": "2026-11-24",
+  "engineMatch": [
+    {
+      "run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45312085673",
+      "games": 256,
+      "budget": 25,
+      "score": 0.67578125,
+      "decision": "SUPERIOR"
+    },
+    {
+      "run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45312085673",
+      "games": 128,
+      "budget": 100,
+      "score": 0.68359375,
+      "decision": "INCONCLUSIVE"
+    }
+  ],
+  "selfPlay": {
+    "run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45322104178",
+    "games": 240,
+    "min25": 842,
+    "max25": 984,
+    "min100": 204,
+    "max100": 212
+  },
+  "browser": {
+    "run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45322104197",
+    "positions": 34,
+    "rootScores": 603,
+    "maxError": 6.106226635438361e-16
+  },
+  "training": {
+    "run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45331410655",
+    "arms": [
+      "A",
+      "B",
+      "C"
+    ],
+    "updatesPerArm": 96,
+    "state": "訓練完成；棋力比較尚未結案"
+  }
+}

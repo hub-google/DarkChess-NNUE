@@ -1,5 +1,11 @@
 #pragma once
 #include "nnue.hpp"
+#ifdef DC_EXPERIMENTAL_DELTA
+#include "nnue_delta.hpp"
+#endif
+#ifdef DC_EXPERIMENTAL_TT
+#include "exact_cache.hpp"
+#endif
 #include <chrono>
 #include <limits>
 #include <map>
@@ -7,14 +13,17 @@
 
 namespace dc {
 struct Limits {int depth=12; uint64_t nodes=100000000; double ms=250;};
-struct Analysis {int move=-1,depth=0;uint64_t nodes=0;double ms=0,value=0;std::map<int,double> roots;};
+struct Analysis {int move=-1,depth=0;uint64_t nodes=0;double ms=0,value=0;std::map<int,double> roots;uint64_t cache_hits=0;};
 struct BudgetExceeded{};
 class Search {
  using Clock=std::chrono::steady_clock;
  const NNUE& model;
  Limits limits;
  Clock::time_point started;
- uint64_t nodes=0;
+ uint64_t nodes=0,cache_hits=0;
+#ifdef DC_EXPERIMENTAL_TT
+ ExactCache cache;
+#endif
  static constexpr double INF=std::numeric_limits<double>::infinity();
  void check(){
   if(nodes>=limits.nodes||std::chrono::duration<double,std::milli>(Clock::now()-started).count()>=limits.ms)throw BudgetExceeded{};
@@ -35,8 +44,13 @@ class Search {
  double child_value(const Board& b,const Features& f,const Accumulator& acc,int m,int reveal,int depth,double alpha,double beta){
   check();
   Board child=b;if(!child.play(m,reveal))throw std::logic_error("illegal search child");
+#ifdef DC_EXPERIMENTAL_DELTA
+  (void)f;
+  return node(child,Features{},advance_move(model,acc,b,child,m),depth-1,alpha,beta);
+#else
   auto next=features(child);
   return node(child,next,model.advance(acc,f,next),depth-1,alpha,beta);
+#endif
  }
  double branch(const Board& b,const Features& f,const Accumulator& a,int m,int depth,double alpha,double beta){
   if(m/32!=m%32)return child_value(b,f,a,m,0,depth,alpha,beta);
@@ -68,6 +82,15 @@ class Search {
   tick();
   if(b.over())return terminal(b);
   if(depth<=0)return model.value(a);
+#ifdef DC_EXPERIMENTAL_TT
+  const bool eligible=cacheable(b,depth);
+  ExactKey key{};
+  const double initial_alpha=alpha,initial_beta=beta;
+  if(eligible){
+   key=exact_key(b,depth);
+   if(auto found=cache.find(key);found!=cache.end()){++cache_hits;return found->second;}
+  }
+#endif
   auto moves=ordered(b);
   if(moves.empty())throw std::logic_error("nonterminal without legal moves");
   bool maximize=b.turn!=BLACK;
@@ -77,13 +100,20 @@ class Search {
    if(maximize){v=std::max(v,score);alpha=std::max(alpha,v);}
    else {v=std::min(v,score);beta=std::min(beta,v);}
    if(alpha>=beta)break;
-  }return v;
+  }
+#ifdef DC_EXPERIMENTAL_TT
+  if(eligible&&v>initial_alpha&&v<initial_beta&&cache.size()<32768)cache.emplace(key,v);
+#endif
+  return v;
  }
 public:
  explicit Search(const NNUE& m):model(m){}
  Analysis analyze(const Board& b,Limits lim={}){
   if(lim.depth<1||lim.nodes<1||!(lim.ms>0))throw std::invalid_argument("invalid search limits");
-  limits=lim;nodes=0;started=Clock::now();Analysis result;
+  limits=lim;nodes=0;cache_hits=0;started=Clock::now();Analysis result;
+#ifdef DC_EXPERIMENTAL_TT
+  cache.clear();
+#endif
   auto root=ordered(b);if(root.empty()){if(b.over())result.value=terminal(b);return result;}
   result.move=root.front();auto f=features(b);auto acc=model.init(f);result.value=model.value(acc);
   for(int d=1;d<=lim.depth;++d){
@@ -97,7 +127,7 @@ public:
    result.depth=d;result.move=move;result.value=best;result.roots=std::move(values);
    root=ordered(b,&result.roots);
   }
-  result.nodes=nodes;result.ms=std::chrono::duration<double,std::milli>(Clock::now()-started).count();return result;
+  result.nodes=nodes;result.cache_hits=cache_hits;result.ms=std::chrono::duration<double,std::milli>(Clock::now()-started).count();return result;
  }
 };
 }

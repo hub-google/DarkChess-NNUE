@@ -1,4 +1,5 @@
 #include "nnue.hpp"
+#include "nnue_delta.hpp"
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -40,7 +41,10 @@ int main(int argc,char** argv){
    Board prior=b;
    if(b.play(move,reveal)!=bool(accepted))return 1;
    if(!accepted&&!(b==prior))return 1;
-   auto next=features(b);a=model->advance(a,f,next);f=next;
+   auto next=features(b);auto expected_acc=model->advance(a,f,next);
+   auto delta=accepted?advance_move(*model,a,prior,b,move):a;
+   for(int j=0;j<256;++j)if(std::abs(expected_acc[j]-delta[j])>1e-9){std::cerr<<"sparse delta mismatch\n";return 1;}
+   a=delta;f=next;
   }
  }
  if(!terminal||!chase||!repeated)return 1;

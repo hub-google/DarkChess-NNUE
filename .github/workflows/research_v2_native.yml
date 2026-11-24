@@ -3,7 +3,7 @@ run-name: 暗棋 V2｜原生棋規及 NNUE｜${{ github.run_number }}
 on:
   push:
     branches: [research-v2]
-    paths: ['engine/board.hpp','engine/nnue.hpp','engine/search.hpp','engine/corpus.cjs','engine/parity.cpp','engine/search_corpus.cjs','engine/search_parity.cpp','.github/workflows/research_v2_native.yml']
+    paths: ['engine/nnue_delta.hpp','engine/exact_cache.hpp','engine/benchmark_variants.py','engine/board.hpp','engine/nnue.hpp','engine/search.hpp','engine/corpus.cjs','engine/parity.cpp','engine/search_corpus.cjs','engine/search_parity.cpp','.github/workflows/research_v2_native.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -36,6 +36,20 @@ jobs:
           node engine/search_corpus.cjs
           g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/search_parity.cpp -o /tmp/dc-search
           /tmp/dc-search frontend/public/models/champion.bin < engine/search_corpus.txt | tee engine/search_parity.json
+      - name: 同 CPU 實測稀疏更新、精確置換表及主機 SIMD 編譯
+        run: |
+          set -euo pipefail
+          for v in reference delta tt combined native_simd; do
+            flags=()
+            case "$v" in
+              delta) flags+=(-DDC_EXPERIMENTAL_DELTA);;
+              tt) flags+=(-DDC_EXPERIMENTAL_TT);;
+              combined) flags+=(-DDC_EXPERIMENTAL_DELTA -DDC_EXPERIMENTAL_TT);;
+              native_simd) flags+=(-DDC_EXPERIMENTAL_DELTA -DDC_EXPERIMENTAL_TT -march=native);;
+            esac
+            g++ -std=c++20 -O3 -Wall -Wextra -Werror "${flags[@]}" engine/search_parity.cpp -o "/tmp/dc-$v"
+          done
+          python engine/benchmark_variants.py frontend/public/models/champion.bin engine/search_corpus.txt engine/variant_benchmark.json
       - name: 紀錄實測結果
         run: |
           echo '## C++ 逐手等價與 NNUE 誤差' >> "$GITHUB_STEP_SUMMARY"
@@ -43,10 +57,13 @@ jobs:
           cat engine/parity.json >> "$GITHUB_STEP_SUMMARY"
           echo '## 機率搜尋根估值' >> "$GITHUB_STEP_SUMMARY"
           cat engine/search_parity.json >> "$GITHUB_STEP_SUMMARY"
+          echo '## 搜尋等價微基準（未直接啟用實驗最佳化）' >> "$GITHUB_STEP_SUMMARY"
+          cat engine/variant_benchmark.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: native-parity
           path: |
             engine/parity.json
             engine/search_parity.json
+            engine/variant_benchmark.json
           if-no-files-found: error

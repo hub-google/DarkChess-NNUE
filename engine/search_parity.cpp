@@ -6,7 +6,7 @@ using namespace dc;
 int main(int argc,char** argv){
  if(argc!=2)return 2;
  auto model=std::make_unique<NNUE>(argv[1]);Search engine(*model);
- int n,roots=0;double error=0;uint64_t nodes=0;double ms=0;
+ int n,roots=0;double error=0;uint64_t nodes=0,cache_hits=0;double ms=0;
  if(!(std::cin>>n)||n<=0)return 2;
  for(int i=0;i<n;++i){
   Board b;int path;std::cin>>path;
@@ -27,7 +27,7 @@ int main(int argc,char** argv){
   if(!b.legal(limited.move)||limited.nodes>1||limited.depth!=0||!limited.roots.empty())return 1;
   auto timed=engine.analyze(b,{12,100000000,0.001});
   if(!b.legal(timed.move)||(timed.depth==0&&!timed.roots.empty()))return 1;
-  nodes+=a.nodes;ms+=a.ms;
+  nodes+=a.nodes;cache_hits+=a.cache_hits;ms+=a.ms;
  }
- std::cout<<std::setprecision(12)<<"{\"positions\":"<<n<<",\"root_scores\":"<<roots<<",\"max_error\":"<<error<<",\"nodes\":"<<nodes<<",\"ms\":"<<ms<<",\"budget_fallback\":true,\"parity\":true}\n";
+ std::cout<<std::setprecision(12)<<"{\"positions\":"<<n<<",\"root_scores\":"<<roots<<",\"max_error\":"<<error<<",\"nodes\":"<<nodes<<",\"cache_hits\":"<<cache_hits<<",\"ms\":"<<ms<<",\"budget_fallback\":true,\"parity\":true}\n";
 }
