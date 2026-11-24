@@ -1,0 +1,42 @@
+name: 暗棋 V2｜原生棋規及 NNUE
+run-name: 暗棋 V2｜原生棋規及 NNUE｜${{ github.run_number }}
+on:
+  push:
+    branches: [research-v2]
+    paths: ['engine/**','.github/workflows/research_v2_native.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: v2-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        name: 取得研究程式
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 編譯參考引擎與產生逐手測試
+        run: |
+          npm ci --prefix frontend
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+          node engine/corpus.cjs
+      - name: 驗證原生棋規與增量推論
+        run: |
+          set -euo pipefail
+          g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/parity.cpp -o /tmp/dc-parity
+          /tmp/dc-parity frontend/public/models/champion.bin < engine/corpus.txt | tee engine/parity.json
+      - name: 紀錄實測結果
+        run: |
+          echo '## C++ 逐手等價與 NNUE 誤差' >> "$GITHUB_STEP_SUMMARY"
+          echo '只代表研究核心正確性，不代表完整棋力或正式部署。' >> "$GITHUB_STEP_SUMMARY"
+          cat engine/parity.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-parity
+          path: engine/parity.json
+          if-no-files-found: error
