@@ -1,0 +1,132 @@
+{
+  "results": {
+    "25": {
+      "stats": {
+        "pairs": 128,
+        "planned_pairs": 128,
+        "pentanomial": [
+          0,
+          7,
+          50,
+          45,
+          26
+        ],
+        "candidate_score": 0.67578125,
+        "score_interval_hoeffding": [
+          0.5449481825373175,
+          0.8066143174626825
+        ],
+        "relative_elo_descriptive": 127.5872043010886,
+        "one_sided_exchangeability_p": 7.941826673087985e-16,
+        "alpha": 0.025,
+        "minimum_score_gain": 0,
+        "decision": "SUPERIOR",
+        "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+      },
+      "baseline_ts": {
+        "moves": 19192,
+        "nodes": 28638731,
+        "depth_sum": 44739,
+        "depth_zero": 1,
+        "search_ms": 482089.19662799983,
+        "decision_ms": 482421.9008850011,
+        "cpu_ms": 490774.46199999994,
+        "max_search_ms": 27.894132,
+        "over_budget_2x": 0,
+        "mean_depth": 2.3311275531471445,
+        "mean_search_ms": 25.11927869049603,
+        "mean_decision_ms": 25.13661426036896,
+        "nodes_per_search_second": 59405.461064705916
+      },
+      "native_cpp": {
+        "moves": 19241,
+        "nodes": 98549931,
+        "depth_sum": 53067,
+        "depth_zero": 0,
+        "search_ms": 480147.5336460005,
+        "decision_ms": 487168.61101799994,
+        "cpu_ms": 480636.5929999997,
+        "max_search_ms": 25.192912,
+        "over_budget_2x": 0,
+        "mean_depth": 2.7580167350969282,
+        "mean_search_ms": 24.95439601091422,
+        "mean_decision_ms": 25.319297906449766,
+        "nodes_per_search_second": 205249.27047247553
+      },
+      "seeds": [
+        24061101,
+        24061102,
+        24061103,
+        24061104,
+        24061105,
+        24061106,
+        24061107,
+        24061108
+      ]
+    },
+    "100": {
+      "stats": {
+        "pairs": 64,
+        "planned_pairs": 64,
+        "pentanomial": [
+          0,
+          4,
+          21,
+          27,
+          12
+        ],
+        "candidate_score": 0.68359375,
+        "score_interval_hoeffding": [
+          0.49856785158740025,
+          0.8686196484125998
+        ],
+        "relative_elo_descriptive": 133.82121192305786,
+        "one_sided_exchangeability_p": 4.830212674278268e-9,
+        "alpha": 0.025,
+        "minimum_score_gain": 0,
+        "decision": "INCONCLUSIVE",
+        "note": "Fixed-horizon test; descriptive Elo only. No optional stopping; independent pairs required."
+      },
+      "baseline_ts": {
+        "moves": 10945,
+        "nodes": 90888250,
+        "depth_sum": 34520,
+        "depth_zero": 0,
+        "search_ms": 1092201.8227229987,
+        "decision_ms": 1092409.9399620083,
+        "cpu_ms": 1118580.7419999994,
+        "max_search_ms": 101.05993099999614,
+        "over_budget_2x": 0,
+        "mean_depth": 3.153951576062129,
+        "mean_search_ms": 99.79002491758781,
+        "mean_decision_ms": 99.80903974070428,
+        "nodes_per_search_second": 83215.61831256057
+      },
+      "native_cpp": {
+        "moves": 10967,
+        "nodes": 274250969,
+        "depth_sum": 39751,
+        "depth_zero": 0,
+        "search_ms": 1092908.3990780003,
+        "decision_ms": 1095786.3553170005,
+        "cpu_ms": 1093138.6330000015,
+        "max_search_ms": 100.296739,
+        "over_budget_2x": 0,
+        "mean_depth": 3.6246010759551384,
+        "mean_search_ms": 99.65427182255861,
+        "mean_decision_ms": 99.91669146685516,
+        "nodes_per_search_second": 250936.82986731885
+      },
+      "seeds": [
+        24061201,
+        24061202,
+        24061203,
+        24061204
+      ]
+    }
+  },
+  "scope": "exploratory frozen TS versus native, identical weights, fixed search budgets, Bonferroni alpha .025 per budget; no automatic promotion",
+  "source_run": "https://github.com/hub-google/DarkChess-NNUE/actions/runs/45312085673",
+  "commit": "a44075cc066b6e0f73723f3180aaf0d6dfb8ecd9",
+  "verified_games": 384
+}

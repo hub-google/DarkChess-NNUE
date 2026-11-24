@@ -1,7 +1,7 @@
 import { decodeNNUE, validateNNUEManifest } from './nnue-core'
 export { BrowserNNUE, extractFeatures } from './nnue-core'
 
-export async function loadChampion() {
+export async function loadChampionBytes() {
   const base = `${import.meta.env.BASE_URL}models/`
   const metadataResponse = await fetch(`${base}champion.json`, { cache: 'no-store' })
   if (!metadataResponse.ok) throw new Error('Champion manifest is unavailable')
@@ -11,5 +11,11 @@ export async function loadChampion() {
   const data = await binaryResponse.arrayBuffer()
   const digest = await crypto.subtle.digest('SHA-256', data)
   const hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2,'0')).join('')
-  return decodeNNUE(metadata,new Uint8Array(data),hash)
+  if (hash !== metadata.sha256 || data.byteLength !== metadata.bytes) throw new Error('Champion binary checksum/size mismatch')
+  return {metadata, bytes: new Uint8Array(data), hash}
+}
+
+export async function loadChampion() {
+  const {metadata, bytes, hash} = await loadChampionBytes()
+  return decodeNNUE(metadata,bytes,hash)
 }

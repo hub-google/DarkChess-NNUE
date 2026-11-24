@@ -14,3 +14,10 @@ models/challenger.policy
 resume_state/
 training_cache/
 validation_models/
+
+# Generated research builds and test corpora
+frontend/public/engine/darkchess.mjs
+frontend/public/engine/darkchess.wasm
+engine/corpus.txt
+engine/search_corpus.txt
+engine/wasm_report.json
