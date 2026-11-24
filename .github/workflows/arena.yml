@@ -1,0 +1,167 @@
+name: 暗棋 03｜獨立棋力驗證
+run-name: 暗棋 03｜獨立棋力驗證｜${{ github.run_number }}
+on:
+  workflow_dispatch:
+    inputs:
+      training_run:
+        description: 已驗證訓練 Run ID
+        required: true
+        type: string
+      training_attempt:
+        description: Run attempt
+        default: '1'
+        type: string
+      allow_promotion:
+        description: 通過才允許升級
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      training_run:
+        required: true
+        type: string
+      training_attempt:
+        required: true
+        type: string
+      allow_promotion:
+        type: boolean
+        default: false
+permissions:
+  contents: write
+  actions: write
+jobs:
+  matches:
+    if: github.ref == 'refs/heads/master'
+    name: 固定配對 ${{ matrix.ms }}ms｜${{ matrix.slot }}
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        include:
+          - {slot: 1, ms: 25}
+          - {slot: 2, ms: 25}
+          - {slot: 3, ms: 25}
+          - {slot: 4, ms: 25}
+          - {slot: 5, ms: 25}
+          - {slot: 6, ms: 25}
+          - {slot: 7, ms: 25}
+          - {slot: 8, ms: 25}
+          - {slot: 9, ms: 100}
+          - {slot: 10, ms: 100}
+          - {slot: 11, ms: 100}
+          - {slot: 12, ms: 100}
+          - {slot: 13, ms: 100}
+          - {slot: 14, ms: 100}
+          - {slot: 15, ms: 100}
+          - {slot: 16, ms: 100}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 確認訓練來源與版本
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRAINING_RUN: ${{ inputs.training_run }}
+          TRAINING_ATTEMPT: ${{ inputs.training_attempt }}
+        run: python pipeline/check_source.py "$TRAINING_RUN" "$TRAINING_ATTEMPT" .github/workflows/self_play.yml .github/workflows/train.yml
+      - uses: actions/download-artifact@v4
+        with:
+          name: v2-candidate-${{ inputs.training_attempt }}
+          path: experiment
+          run-id: ${{ inputs.training_run }}
+          github-token: ${{ github.token }}
+      - name: 驗證候選權重並編譯
+        env:
+          TRAINING_RUN: ${{ inputs.training_run }}
+          TRAINING_ATTEMPT: ${{ inputs.training_attempt }}
+        run: |
+          pip install numpy numba
+          python - <<'PY'
+          import sys,os
+          from pathlib import Path
+          sys.path.insert(0,'pipeline')
+          from release import verify_training
+          verify_training(Path('experiment'),int(os.environ['TRAINING_RUN']),int(os.environ['TRAINING_ATTEMPT']),os.environ['GITHUB_SHA'])
+          PY
+          g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/model_match.cpp -o /tmp/dc-model-match
+      - name: 32 組同底牌換邊與完整重播
+        env:
+          SLOT: ${{ matrix.slot }}
+          BUDGET: ${{ matrix.ms }}
+          TRAINING_RUN: ${{ inputs.training_run }}
+          TRAINING_ATTEMPT: ${{ inputs.training_attempt }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" -lt 256
+          SEED=$((GITHUB_RUN_ID*65536+GITHUB_RUN_ATTEMPT*256+64+SLOT))
+          mkdir -p results
+          /tmp/dc-model-match experiment/base/champion.bin experiment/candidate/champion.bin "$SEED" 32 "$BUDGET" results/match.jsonl | tee results/match.json
+          gzip -n results/match.jsonl
+          python -u src/training/validate_replay.py --directory results --min-games 64
+          python pipeline/release.py attach experiment results "$TRAINING_RUN" "$TRAINING_ATTEMPT" "$SLOT" "$BUDGET"
+      - uses: actions/upload-artifact@v4
+        name: 保存完整競賽證據
+        with:
+          name: v2-arena-${{ github.run_attempt }}-${{ matrix.slot }}
+          path: results/
+          if-no-files-found: error
+          retention-days: 30
+  gate:
+    name: 獨立重算 1024 局及雙門檻統計
+    needs: matches
+    if: github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      passed: ${{ steps.gate.outputs.passed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: v2-arena-${{ github.run_attempt }}-*
+          path: shards
+      - uses: actions/download-artifact@v4
+        with:
+          name: v2-candidate-${{ inputs.training_attempt }}
+          path: experiment
+          run-id: ${{ inputs.training_run }}
+          github-token: ${{ github.token }}
+      - name: 驗證所有對局、來源與統計結果
+        id: gate
+        env:
+          TRAINING_RUN: ${{ inputs.training_run }}
+          TRAINING_ATTEMPT: ${{ inputs.training_attempt }}
+        run: |
+          pip install numpy numba
+          for i in {1..16}; do mv "shards/v2-arena-$GITHUB_RUN_ATTEMPT-$i" "shards/v2-arena-$i"; done
+          python -u pipeline/release.py aggregate shards experiment gate "$TRAINING_RUN" "$TRAINING_ATTEMPT"
+      - uses: actions/upload-artifact@v4
+        name: 保存不可省略的晉升證據
+        with:
+          name: v2-promotion-gate-${{ github.run_attempt }}
+          path: gate/
+          if-no-files-found: error
+          retention-days: 30
+  promote:
+    name: 雙門檻通過才升級
+    needs: gate
+    if: github.ref == 'refs/heads/master' && inputs.allow_promotion && needs.gate.outputs.passed == 'true'
+    uses: ./.github/workflows/promote.yml
+    with:
+      training_run: ${{ inputs.training_run }}
+      training_attempt: ${{ inputs.training_attempt }}
+      arena_run: ${{ format('{0}',github.run_id) }}
+      arena_attempt: ${{ format('{0}',github.run_attempt) }}
+    secrets: inherit

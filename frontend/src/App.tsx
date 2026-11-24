@@ -71,41 +71,66 @@ function App() {
     setThinking(true)
     const worker = searchWorkerRef.current
     const id = ++searchSerialRef.current
-    if (!worker) {
-      const current = gameRef.current
-      const analysis = new DarkChessEngine(modelRef.current ? state => modelRef.current!.evaluate(state) : undefined)
-        .analyze(current, {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
-      if (analysis.move) applyMove(analysis.move)
-      setLastSearch({...analysis,backend:'ts'})
-      setThinking(false); refresh()
-      return
+    type Reply = {id: number; move?: Move; error?: string; depth?: number; nodes?: number; elapsedMs?: number; backend?: 'ts' | 'wasm'}
+    let finished = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer)
+      worker?.removeEventListener('message', onReply)
+      worker?.removeEventListener('error', onError)
+      worker?.removeEventListener('messageerror', onError)
     }
-    const onReply = (event: MessageEvent<{id: number; move?: {from: number; to: number; flip?: boolean}; error?: string; depth?: number; nodes?: number; elapsedMs?: number; backend?: 'ts' | 'wasm'}>) => {
-      if (cancelled || event.data.id !== id) return
-      worker.removeEventListener('message', onReply)
+    const finish = (reply?: Reply) => {
+      if (finished || cancelled || searchSerialRef.current !== id) return
+      finished = true
+      cleanup()
       const current = gameRef.current
-      if (current.isOver || current.turn === human) return
-      let move = event.data.move
-      if (!move || event.data.error) {
-        // Same search core as the worker, with a bounded emergency budget.
-        const fallback = new DarkChessEngine(modelRef.current ? state => modelRef.current!.evaluate(state) : undefined)
-          .analyze(current, {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
-        move = fallback.move
-        setLastSearch({...fallback,backend:'ts'})
+      if (current.isOver || current.turn === human) { setThinking(false); return }
+      const legal = current.legalMoves()
+      const valid = (m?: Move) => m && legal.some(l => l.from === m.from && l.to === m.to && Boolean(l.flip) === Boolean(m.flip))
+      let move = reply?.move
+      if (!valid(move) || reply?.error) {
+        // Restart a broken or stuck worker; never leave the board disabled.
+        if (worker && searchWorkerRef.current === worker) {
+          worker.terminate()
+          searchWorkerRef.current = newSearchWorker()
+        }
+        try {
+          const fallback = new DarkChessEngine(modelRef.current ? state => modelRef.current!.evaluate(state) : undefined)
+            .analyze(current, {maxDepth: 3, nodeBudget: 2500, maxMs: 150})
+          move = fallback.move
+          setLastSearch({...fallback,backend:'ts'})
+        } catch {
+          move = legal[0]
+          setLastSearch({depth:0,nodes:0,elapsedMs:0,backend:'ts'})
+        }
       } else {
-        setLastSearch({depth: event.data.depth ?? 0, nodes: event.data.nodes ?? 0,
-          elapsedMs: event.data.elapsedMs ?? 0, backend: event.data.backend ?? 'ts'})
+        setLastSearch({depth:reply?.depth ?? 0,nodes:reply?.nodes ?? 0,
+          elapsedMs:reply?.elapsedMs ?? 0,backend:reply?.backend ?? 'ts'})
+      }
+      if (!valid(move)) {
+        move = legal[0]
+        setLastSearch({depth:0,nodes:0,elapsedMs:0,backend:'ts'})
       }
       if (move) applyMove(move)
       setThinking(false)
       refresh()
     }
+    const onReply = (event: MessageEvent<Reply>) => {
+      if (event.data.id === id) finish(event.data)
+    }
+    const onError = (event: Event) => { event.preventDefault(); finish() }
+    if (!worker) { finish(); return }
     worker.addEventListener('message', onReply)
-    worker.postMessage({id, board: gameRef.current.publicClone(), history: publicHistoryRef.current.slice(),
-      backend: new URLSearchParams(location.search).get('engine') === 'wasm' ? 'wasm' : 'ts', limits: {
-      maxDepth: 12, nodeBudget: 25000, maxMs: 2500,
-    }})
-    return () => { cancelled = true; worker.removeEventListener('message', onReply) }
+    worker.addEventListener('error', onError)
+    worker.addEventListener('messageerror', onError)
+    timer = setTimeout(() => finish(), 15000)
+    try {
+      worker.postMessage({id, board:gameRef.current.publicClone(),history:publicHistoryRef.current.slice(),
+        backend:(new URLSearchParams(location.search).get('engine') ?? import.meta.env.VITE_DEFAULT_SEARCH_ENGINE) === 'wasm' ? 'wasm' : 'ts',
+        limits:{maxDepth:12,nodeBudget:100000000,maxMs:2500}})
+    } catch { finish() }
+    return () => { cancelled=true; cleanup() }
   }, [game, human, refresh, applyMove])
 
   return (

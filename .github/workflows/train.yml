@@ -1,399 +1,98 @@
-name: 模型訓練與升級
-run-name: 暗棋｜模型訓練與升級｜${{ github.run_number }}
+name: 暗棋 02｜CPU 模型訓練
+run-name: 暗棋 02｜CPU 模型訓練｜${{ github.run_number }}
 on:
   workflow_dispatch:
+    inputs:
+      source_run:
+        description: 已驗證自我對弈 Run ID
+        required: true
+        type: string
+      source_attempt:
+        description: Run attempt
+        default: '1'
+        type: string
+      recipe:
+        description: 資料配方
+        type: choice
+        options: [new-only,mixed-teacher,mixed-outcomes]
+        default: new-only
+      allow_promotion:
+        description: 棋力雙門檻通過後允許升級
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      source_run:
+        required: true
+        type: string
+      source_attempt:
+        required: true
+        type: string
+      recipe:
+        required: true
+        type: string
+      allow_promotion:
+        type: boolean
+        default: false
 permissions:
-  contents: read
-concurrency:
-  group: nnue-training-production
-  cancel-in-progress: false
+  contents: write
+  actions: write
 jobs:
-  hf-replay-consolidation:
-    name: HF 棋譜整併、歷史清理與回讀驗證
+  train:
+    name: 固定 CPU 訓練及候選權重驗證
     if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    timeout-minutes: 85
-    # Serialize HF mutations: self-play writer and
-    # training consolidation/squash. Never squash during a competing upload.
-    concurrency:
-      group: darkchess-hf-stage-writer
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: 安裝 HF 棋譜與歷史清理工具
-        run: pip install huggingface_hub
-      - name: 確定訓練資料快照時間
-        shell: bash
-        run: |
-          NOW_EPOCH=$(date -u +%s)
-          echo "CONSOLIDATION_CUTOFF_EPOCH=$NOW_EPOCH" >> "$GITHUB_ENV"
-          echo "Snapshot cutoff: $(date -u -d "@$NOW_EPOCH" --iso-8601=seconds)"
-      - name: 整併已上傳的完整棋譜並完成 HF 回讀驗證
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -u src/training/consolidate_buffer.py
-      - name: 上傳成功後清除 HF 舊歷史並核對所有目前檔案
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -u src/workers/compact_hf_history.py
-
-  train-and-promote:
-    # Run CPU training after the short, serialized HF consolidation writer.
-    needs: hf-replay-consolidation
-    if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    timeout-minutes: 345
     permissions:
-      contents: write
-      actions: write
-
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-          cache: pip
-
-      - name: 安裝訓練所需套件
-        run: |
-          python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-
-      - name: 執行程式回歸測試
-        run: python -m unittest discover -s test -p "test_*.py" -v
-
-      - name: 下載私人棋譜資料
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          mkdir -p datasets
-          python - <<'PY'
-          import os
-          import shutil
-          from huggingface_hub import hf_hub_download
-          token = os.environ["HF_TOKEN"]
-          if not token:
-              raise RuntimeError("HF_TOKEN missing: private replay is unreadable")
-          path = hf_hub_download(
-              repo_id="hub-google/DarkChess-NNUE-Data",
-              repo_type="dataset",
-              filename="replay_buffer.jsonl.gz",
-              token=token,
-          )
-          shutil.copy(path, "datasets/replay_buffer.jsonl.gz")
-          print("[Training] Downloaded authenticated private replay snapshot.")
-          PY
-
-      - name: 保留訓練前快照供每日 KPI 計算真實新增棋譜
-        run: cp .github/training_last_snapshot.json /tmp/previous_training_snapshot.json
-
-      - name: 確認是否真的新增有效棋譜
-        id: new_replays
-        run: |
-          python -u src/training/new_replay_gate.py \
-            --replay datasets/replay_buffer.jsonl.gz \
-            --marker .github/training_last_snapshot.json \
-            --candidate training_snapshot_candidate.json \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: 沒有新棋譜時直接跳過模型訓練
-        if: steps.new_replays.outputs.new != 'true'
-        run: |
-          echo "[Training] No new valid replay game IDs; skip training and model validation."
-          echo "### 沒有新棋譜，略過模型訓練" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 確認有效棋譜數量門檻
-        if: steps.new_replays.outputs.new == 'true'
-        id: enough_games
-        env:
-          MIN_TRAINING_GAMES: "1000"
-        run: |
-          python -u src/training/replay_gate.py \
-            --replay datasets/replay_buffer.jsonl.gz \
-            --minimum "$MIN_TRAINING_GAMES" \
-            --github-output "$GITHUB_OUTPUT"
-
-
-      - name: 建立訓練快取並重算關鍵局面
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        env:
-          MAX_POSITIONS_PER_GAME: "4"
-          MAX_TRAINING_SAMPLES: "2000000"
-          TRAINING_CACHE_SHARD_SIZE: "50000"
-          REANALYSIS_CANDIDATES: "4096"
-          REANALYSIS_MAX_POSITIONS: "64"
-          REANALYSIS_DEPTH: "10"
-          REANALYSIS_NODE_BUDGET: "50000"
-          REANALYSIS_MAX_SECONDS: "4.0"
-          TORCH_NUM_THREADS: "1"
-        run: python -u src/training/build_training_cache.py
-
-      - name: 檢查訓練資料是否足夠
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        env:
-          MIN_TRAINING_GAMES: "1000"
-        run: |
-          python -u src/training/validate_training_readiness.py \
-            --manifest training_cache/manifest.json \
-            --min-games "$MIN_TRAINING_GAMES"
-
-      - name: 延續研究模型訓練新一代候選模型
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        env:
-          BATCH_SIZE: "1024"
-          TRAINING_EPOCHS: "3"
-          LEARNING_RATE: "0.0001"
-          MAX_POSITIONS_PER_GAME: "4"
-          MAX_TRAINING_SAMPLES: "2000000"
-          TRAINING_CACHE_DIR: "training_cache"
-          SYMMETRY_AUGMENTATION: "true"
-          COLOR_SWAP_AUGMENTATION: "true"
-          SYMMETRY_CONSISTENCY_WEIGHT: "0.02"
-          SYMMETRY_CONSISTENCY_EVERY: "4"
-        run: |
-          set -o pipefail
-          python -u src/training/train.py 2>&1 | tee training_kpi.log
-
-      - name: 驗證並保存持續訓練的研究模型
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Gate corrupt/NaN checkpoints before advancing the replay marker.
-          python -u src/training/research_checkpoint.py --checkpoint models/challenger.nnue
-          cp models/challenger.nnue models/research.nnue
-          cp training_snapshot_candidate.json .github/training_last_snapshot.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/research.nnue .github/training_last_snapshot.json
-          git commit -m "chore: advance continuous research NNUE"
-          # A failed push must fail the job, never silently lose the trained weights.
-          PUSHED=false
-          for attempt in 1 2 3; do
-            git fetch origin master
-            if ! git rebase origin/master; then
-              git rebase --abort || true
-              echo "::error::Research model/snapshot changed concurrently; refusing to overwrite."
-              exit 1
-            fi
-            if git push origin HEAD:master; then
-              PUSHED=true
-              break
-            fi
-            sleep "$((attempt * 3))"
-          done
-          if [ "$PUSHED" != "true" ]; then
-            echo "::error::Research checkpoint was not persisted; stopping validation."
-            exit 1
-          fi
-          echo "[Research] Persisted research.nnue and replay marker; next run will train from research.nnue."
-          echo "### 研究模型訓練已接續並保存" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 檢查新舊模型的對稱性
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        env:
-          TORCH_NUM_THREADS: "1"
-        run: |
-          python -u src/training/symmetry_eval.py \
-            --cache-dir training_cache \
-            --model models/champion.nnue \
-            --model models/challenger.nnue \
-            --samples 256 \
-            --output symmetry_report.json
-
-      - name: 準備共用引擎模型驗證環境
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: 匯出新舊模型的共用評估權重
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        run: |
-          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
-          python -u src/training/export_nnue.py --input models/challenger.nnue --output-dir validation_models/challenger
-          npm ci --prefix frontend
-          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-      - name: 以相同搜尋引擎驗證新舊模型棋力
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true'
-        id: validate
-        timeout-minutes: 130
-        run: |
-          node .shared-build/src/workers/sprt_shared.js \
-            --champion validation_models/champion \
-            --challenger validation_models/challenger \
-            --pairs 200 \
-            --depth 6 \
-            --node-budget 1200 \
-            --max-seconds 0.10 \
-            --elo0 -20 \
-            --elo1 20 \
-            --output sprt_results.json
-          # Keep the SAME candidate and the SAME random stream if 200 pairs are inconclusive.
-          if [ "$(python -c 'import json; print(json.load(open("sprt_results.json"))["decision"])')" = "UNDECIDED" ]; then
-            echo "[SPRT] Inconclusive 200 pairs; continue 200 more without discarding scores."
-            node .shared-build/src/workers/sprt_shared.js \
-              --champion validation_models/champion \
-              --challenger validation_models/challenger \
-              --pairs 400 \
-              --resume sprt_results.json \
-              --depth 6 \
-              --node-budget 1200 \
-              --max-seconds 0.10 \
-              --elo0 -20 \
-              --elo1 20 \
-              --output sprt_results.json
-          fi
-
-      - name: 使用正式六層搜尋完成成對棋局健全性測試
-        if: steps.validate.outputs.passed == 'true'
-        id: production_probe
-        timeout-minutes: 90
-        run: |
-          # Fast SPRT screens candidates; this probe checks that the exact
-          # production search policy also completes real matched games.
-          # One pair does NOT establish a statistically reliable Elo advantage.
-          node .shared-build/src/workers/sprt_shared.js \
-            --champion validation_models/champion \
-            --challenger validation_models/challenger \
-            --pairs 1 \
-            --profile production \
-            --probe-only \
-            --output production_probe_results.json
-          python - <<'PY'
-          import json
-          report = json.load(open("production_probe_results.json"))
-          assert report["games_played"] == 2
-          assert report["profile"] == "production"
-          assert report["production_full_depth_moves"] > 0
-          PY
-
-      - name: 保存模型驗證與訓練紀錄
-        if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-training-${{ github.run_id }}
-          path: |
-            training_cache/manifest.json
-            sprt_results.json
-            production_probe_results.json
-            symmetry_report.json
-            models/challenger.nnue
-            models/research.nnue
-
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: 升級通過驗證的新模型
-        id: promote
-        if: steps.validate.outputs.passed == 'true' && steps.production_probe.outcome == 'success'
-        run: |
-          # Keep only the active champion in the repository. Do not
-          # accumulate older weight snapshots in models/archive.
-          mv models/challenger.nnue models/champion.nnue
-
-          python src/training/export_nnue.py \
-            --input models/champion.nnue \
-            --output-dir frontend/public/models
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/champion.nnue frontend/public/models/
-          if ! git diff --staged --quiet; then
-            git commit -m "chore: promote validated NNUE champion"
-            # Training may have modified other tracked files (e.g. old
-            # challenger checkpoints) that are intentionally not committed.
-            # Keep the validated champion commit, discard only scratch
-            # working-tree mutations so git rebase can run successfully.
-            git status --short
-            git reset --hard HEAD
-            # The public training-status workflow may update master while a
-            # several-hour CPU training is running. Rebase that unrelated
-            # commit rather than losing a legitimate SPRT promotion.
-            # Conflicting model changes abort instead of overwriting them.
-            PUSHED=false
-            for attempt in 1 2 3; do
-              git fetch origin master
-              if ! git rebase origin/master; then
-                git rebase --abort || true
-                echo "::error::Champion changed concurrently; refusing stale promotion."
-                exit 1
-              fi
-              if git push origin HEAD:master; then
-                PUSHED=true
-                break
-              fi
-            done
-            if [ "$PUSHED" != "true" ]; then
-              echo "::error::Could not publish validated champion after three attempts."
-              exit 1
-            fi
-            echo "promoted=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "promoted=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: 模型真正升級後才更新網站
-        if: steps.promote.outputs.promoted == 'true'
+          python-version: '3.11'
+      - name: 核對前置 Run
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+        run: python pipeline/check_source.py "$SOURCE_RUN" "$SOURCE_ATTEMPT" .github/workflows/self_play.yml
+      - uses: actions/download-artifact@v4
+        name: 取得已驗證新棋譜
+        with:
+          name: v2-verified-games-${{ inputs.source_attempt }}
+          path: verified
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: CPU 訓練依賴
         run: |
-          gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "Promoted champion: requested GitHub Pages redeployment."
-
-      - name: 未通過驗證則保留舊模型
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready == 'true' && steps.validate.outputs.passed != 'true'
-        run: |
-          echo "[Research] Challenger was safely retained as research.nnue for the next training."
-          echo "[Champion] Paired SPRT did not prove promotion; existing champion remains active."
-
-
-      - name: 資料不足時繼續累積棋譜
-        if: steps.new_replays.outputs.new == 'true' && steps.enough_games.outputs.ready != 'true'
-        run: |
-          echo "[Training] Need at least 1000 complete games before training."
-          echo "[Training] No false failure, no false champion promotion."
-          echo "[Training] Automatic schedules remain paused."
-
-      - name: 將當日實際訓練與對弈 KPI 寫回 Git
-        if: ${{ always() && !cancelled() }}
-        shell: bash
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+      - name: 確定相同初始模型與資料配方
         env:
-          KPI_PROMOTED: ${{ steps.promote.outputs.promoted == 'true' && 'true' || 'false' }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          SOURCE_ATTEMPT: ${{ inputs.source_attempt }}
+          RECIPE: ${{ inputs.recipe }}
+        run: python -u pipeline/release.py train verified experiment "$SOURCE_RUN" "$SOURCE_ATTEMPT" "$RECIPE"
+      - uses: actions/upload-artifact@v4
+        name: 保存候選、基準及來源雜湊
+        with:
+          name: v2-candidate-${{ github.run_attempt }}
+          path: experiment/
+          if-no-files-found: error
+          retention-days: 30
+      - name: 產生真實訓練報告
         run: |
-          set -euo pipefail
-          python -u src/training/daily_kpi.py --output metrics/daily_kpi.csv
-          KPI_SOURCE="$PWD/metrics/daily_kpi.csv"
-          KPI_WORKTREE="$(mktemp -d)"
-          git fetch origin master
-          git worktree add -B daily-kpi-publish "$KPI_WORKTREE" origin/master
-          mkdir -p "$KPI_WORKTREE/metrics"
-          cp "$KPI_SOURCE" "$KPI_WORKTREE/metrics/daily_kpi.csv"
-          git -C "$KPI_WORKTREE" config user.name "github-actions[bot]"
-          git -C "$KPI_WORKTREE" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C "$KPI_WORKTREE" add metrics/daily_kpi.csv
-          if git -C "$KPI_WORKTREE" diff --cached --quiet; then
-            echo "[KPI] Today's report already matches Git; nothing to publish."
-            exit 0
-          fi
-          git -C "$KPI_WORKTREE" commit -m "data: record real daily training KPI"
-          for attempt in 1 2 3; do
-            git -C "$KPI_WORKTREE" fetch origin master
-            if ! git -C "$KPI_WORKTREE" rebase origin/master; then
-              git -C "$KPI_WORKTREE" rebase --abort || true
-              echo "::error::KPI conflict; preserving previous published records."
-              exit 1
-            fi
-            if git -C "$KPI_WORKTREE" push origin HEAD:master; then
-              echo "[KPI] Published daily KPI report."
-              exit 0
-            fi
-            sleep "$((attempt * 3))"
-          done
-          echo "::error::Could not publish daily KPI after three retries."
-          exit 1
+          echo '## 固定 CPU 工作量訓練；尚未升級冠軍' >> "$GITHUB_STEP_SUMMARY"
+          python -c 'import json;print(json.dumps(json.load(open("experiment/training.json"))["fit"],indent=2))' >> "$GITHUB_STEP_SUMMARY"
+  arena:
+    name: 接續固定樣本棋力驗證
+    needs: train
+    if: github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/arena.yml
+    with:
+      training_run: ${{ format('{0}',github.run_id) }}
+      training_attempt: ${{ format('{0}',github.run_attempt) }}
+      allow_promotion: ${{ inputs.allow_promotion }}
+    secrets: inherit

@@ -6,7 +6,7 @@ async function main(){
  try{
   const page=await browser.newPage();page.setDefaultTimeout(30000);
   const errors=[];page.on('pageerror',e=>errors.push(String(e)));
-  await page.goto(base+'?engine=wasm');
+  await page.goto(base+(process.env.DC_DEFAULT_WASM==='1'?'':'?engine=wasm'));
   const corpus=fs.readFileSync('engine/search_corpus.txt','utf8').trim().split('\n');
   const count=Number(corpus.shift());
   const fixtures=corpus.map(line=>{
@@ -48,11 +48,19 @@ async function main(){
   if(errors.length)throw Error(errors.join(';'));
   report.browser_ai_turns=2;report.browser_backend='wasm';
   // A fresh navigation recreates the worker and model; no stale history survives.
-  await page.reload();
+  await page.locator('.new-game').click();
+  await page.waitForFunction(()=>document.querySelector('.board-heading span')?.textContent==='對局 #001');
   await board.locator('button.hidden:not([disabled])').first().click();
   await page.waitForFunction(()=>document.querySelector('main')?.getAttribute('data-search-engine')==='wasm' && document.querySelector('.board-heading h2')?.textContent==='輪到你走棋');
   if((await page.locator('.board-heading span').textContent())!=='對局 #003')throw Error('restart failed');
   report.restart=true;
+  await page.waitForFunction(()=>document.querySelector('[aria-label="V2 研究實測"]')?.textContent?.includes('67.58%'));
+  report.research_evidence_visible=true;
+  await page.route('**/engine/darkchess.mjs',route=>route.abort());
+  await page.reload();
+  await board.locator('button.hidden:not([disabled])').first().click();
+  await page.waitForFunction(()=>document.querySelector('main')?.getAttribute('data-search-engine')==='ts' && document.querySelector('.board-heading h2')?.textContent==='輪到你走棋');
+  report.fallback=true;
   if(errors.length)throw Error(errors.join(';'));
   fs.writeFileSync('engine/wasm_report.json',JSON.stringify(report,null,2)+'\n');console.log(report);
  }finally{await browser.close();}

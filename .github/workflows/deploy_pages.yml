@@ -1,71 +1,139 @@
-name: 暗棋網站部署
-run-name: 暗棋網站部署
-
-# 觸發條件：master 分支上有 frontend/、models/ 或此 workflow 檔案變更時觸發
-# Deploy on relevant source changes and retain manual deployment support.
+name: 暗棋 05｜網站建置及實機驗收
+run-name: 暗棋 05｜網站建置及實機驗收｜${{ github.run_number }}
 on:
   push:
-    branches: ["master"]
-    paths:
-      - 'frontend/**'
-      - 'models/**'
-      - '.github/workflows/deploy_pages.yml'
+    branches: [master,release-v2]
+    paths: ['frontend/**','engine/**','pipeline/**','test/**','.github/workflows/**','models/champion.nnue']
   workflow_dispatch:
-
 permissions:
   contents: read
   pages: write
   id-token: write
-
 concurrency:
-  group: "pages"
-  # A newer deployment replaces stale builds; manual Cancel ends this run.
+  group: darkchess-v2-pages-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   build:
-    if: github.ref == 'refs/heads/master'
-    name: 網站測試與建置
-    runs-on: ubuntu-latest
+    name: 完整回歸、原生及預設 WASM 實機
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    outputs:
+      model_sha: ${{ steps.model.outputs.sha }}
     steps:
-      - name: 下載目前的專案程式碼
-        uses: actions/checkout@v4
-
-      - name: 準備網站建置環境
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: 22
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-          
-      - name: 安裝網站所需套件
-        working-directory: ./frontend
-        run: npm ci
-        
-      - name: 執行網站單元測試
-        working-directory: ./frontend
-        run: npm run test -- --run
-        
-      - name: 編譯靜態網站
-        working-directory: ./frontend
-        run: npm run build
-        
-      - name: 設定網站託管環境
-        uses: actions/configure-pages@v4
-        
-      - name: 上傳網站建置成果
-        uses: actions/upload-pages-artifact@v3
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
         with:
-          path: './frontend/dist'
-
+          node-version: 24
+      - name: 安裝並完整回歸
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          python -m unittest discover -s test -p 'test_*.py' -v
+          python -m unittest discover -s arena -p 'test_*.py' -v
+          npm ci --prefix frontend
+          npm test --prefix frontend -- --run
+          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
+      - name: 原生棋規、NNUE 和機率搜尋驗證
+        run: |
+          node engine/corpus.cjs
+          g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/parity.cpp -o /tmp/dc-parity
+          /tmp/dc-parity frontend/public/models/champion.bin < engine/corpus.txt
+          node engine/search_corpus.cjs
+          g++ -std=c++20 -O3 -Wall -Wextra -Werror engine/search_parity.cpp -o /tmp/dc-search
+          /tmp/dc-search frontend/public/models/champion.bin < engine/search_corpus.txt
+      - name: 固定工具鏈編譯正式 WASM
+        run: |
+          git clone --depth 1 --branch 3.1.64 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 3.1.64
+          /tmp/emsdk/emsdk activate 3.1.64
+          source /tmp/emsdk/emsdk_env.sh
+          bash engine/build_wasm.sh
+          VITE_DEFAULT_SEARCH_ENGINE=wasm npm run build --prefix frontend
+      - name: 設定 Chromium
+        run: |
+          npm install --prefix /tmp/dc-browser --no-package-lock playwright@1.51.1
+          /tmp/dc-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: 實際網站預設 WASM、重新開局及故障降級
+        env:
+          PLAYWRIGHT_MODULE: /tmp/dc-browser/node_modules/playwright
+          DC_DEFAULT_WASM: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dc-site
+          ln -s "$PWD/frontend/dist" /tmp/dc-site/DarkChess-NNUE
+          python -m http.server 4173 --bind 127.0.0.1 --directory /tmp/dc-site >/tmp/dc-http.log 2>&1 &
+          SERVER=$!
+          trap 'kill "$SERVER" 2>/dev/null || true' EXIT
+          for i in {1..30}; do if curl -fsS http://127.0.0.1:4173/DarkChess-NNUE/ >/dev/null; then break; fi; sleep 1; done
+          node engine/browser_wasm_test.cjs
+          cat engine/wasm_report.json >> "$GITHUB_STEP_SUMMARY"
+      - name: 記錄實際權重版本
+        id: model
+        run: |
+          python - <<'PY'
+          import sys,os
+          sys.path.insert(0,'pipeline')
+          from release import current_model
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:f.write('sha='+current_model()+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        name: 保存已驗證網站及報告
+        with:
+          name: v2-site-${{ github.run_attempt }}
+          path: |
+            frontend/dist/
+            engine/wasm_report.json
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/configure-pages@v4
+        if: github.ref == 'refs/heads/master'
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/master'
+        with:
+          path: frontend/dist/
   deploy:
-    name: 發布暗棋網站
+    name: 發布已驗證正式網站
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: 發布暗棋網站
+      - uses: actions/deploy-pages@v4
         id: deployment
-        uses: actions/deploy-pages@v4
+  verify-live:
+    name: 正式網址實際對弈及權重核對
+    if: github.ref == 'refs/heads/master'
+    needs: [build,deploy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 安裝瀏覽器
+        run: |
+          npm install --prefix /tmp/dc-browser --no-package-lock playwright@1.51.1
+          /tmp/dc-browser/node_modules/.bin/playwright install --with-deps chromium
+      - name: 實際開啟已發布網站
+        env:
+          PLAYWRIGHT_MODULE: /tmp/dc-browser/node_modules/playwright
+          SITE_URL: ${{ needs.deploy.outputs.page_url }}
+          EXPECTED_MODEL_SHA: ${{ needs.build.outputs.model_sha }}
+        run: |
+          set -euo pipefail
+          node engine/live_smoke.cjs | tee live-verification.json
+          cat live-verification.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v2-live-verification
+          path: live-verification.json
+          if-no-files-found: error

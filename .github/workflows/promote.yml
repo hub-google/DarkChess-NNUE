@@ -1,0 +1,101 @@
+name: 暗棋 04｜冠軍晉升
+run-name: 暗棋 04｜冠軍晉升｜${{ github.run_number }}
+on:
+  workflow_dispatch:
+    inputs:
+      training_run:
+        description: 訓練 Run ID
+        required: true
+        type: string
+      training_attempt:
+        description: 訓練 attempt
+        default: '1'
+        type: string
+      arena_run:
+        description: 競賽 Run ID
+        required: true
+        type: string
+      arena_attempt:
+        description: 競賽 attempt
+        default: '1'
+        type: string
+  workflow_call:
+    inputs:
+      training_run:
+        type: string
+        required: true
+      training_attempt:
+        type: string
+        required: true
+      arena_run:
+        type: string
+        required: true
+      arena_attempt:
+        type: string
+        required: true
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: darkchess-v2-promotion
+  cancel-in-progress: false
+jobs:
+  promote:
+    name: 核對來源、權重、固定統計及 master 最新版本
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: 驗證兩個前置 Run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRAINING_RUN: ${{ inputs.training_run }}
+          TRAINING_ATTEMPT: ${{ inputs.training_attempt }}
+          ARENA_RUN: ${{ inputs.arena_run }}
+          ARENA_ATTEMPT: ${{ inputs.arena_attempt }}
+        run: |
+          python pipeline/check_source.py "$TRAINING_RUN" "$TRAINING_ATTEMPT" .github/workflows/self_play.yml .github/workflows/train.yml
+          python pipeline/check_source.py "$ARENA_RUN" "$ARENA_ATTEMPT" .github/workflows/self_play.yml .github/workflows/train.yml .github/workflows/arena.yml
+      - uses: actions/download-artifact@v4
+        with:
+          name: v2-candidate-${{ inputs.training_attempt }}
+          path: experiment
+          run-id: ${{ inputs.training_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: v2-promotion-gate-${{ inputs.arena_attempt }}
+          path: gate
+          run-id: ${{ inputs.arena_run }}
+          github-token: ${{ github.token }}
+      - name: 安裝 CPU 匯出器
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy numba
+      - name: 獨立重算晉升決策並匯出精確權重
+        env:
+          TRAINING_RUN: ${{ inputs.training_run }}
+          TRAINING_ATTEMPT: ${{ inputs.training_attempt }}
+          ARENA_RUN: ${{ inputs.arena_run }}
+          ARENA_ATTEMPT: ${{ inputs.arena_attempt }}
+        run: python pipeline/release.py promote experiment gate "$TRAINING_RUN" "$TRAINING_ATTEMPT" "$ARENA_RUN" "$ARENA_ATTEMPT"
+      - name: 僅在基準未改變時原子提交新冠軍
+        run: |
+          set -euo pipefail
+          git fetch origin master
+          test "$(git rev-parse origin/master)" = "$GITHUB_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add models/champion.nnue frontend/public/models/champion.json frontend/public/models/champion.bin metrics/promotion-v2.json
+          git commit -m 'chore: promote independently verified V2 champion'
+          git push origin HEAD:master
+      - name: 確認正式模型提交後才部署
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run deploy_pages.yml --repo "$GITHUB_REPOSITORY" --ref master
+          echo '## 已通過雙預算棋力門檻；正式冠軍提交成功，部署另有驗收。' >> "$GITHUB_STEP_SUMMARY"
