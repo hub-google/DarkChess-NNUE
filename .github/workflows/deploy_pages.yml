@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  actions: write
   pages: write
   id-token: write
 
@@ -25,17 +24,12 @@ concurrency:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/master'
     name: 網站測試與建置
     runs-on: ubuntu-latest
     steps:
       - name: 下載目前的專案程式碼
         uses: actions/checkout@v4
-
-      - name: 清理已完成的舊執行紀錄
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/prune_action_runs.py --scope all
 
       - name: 準備網站建置環境
         uses: actions/setup-node@v4

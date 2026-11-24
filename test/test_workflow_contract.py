@@ -1,72 +1,53 @@
-"""Regression contract for the three active GitHub Actions workflows.
-
-GitHub decides the exact termination timing of the Cancel button. These guards
-prevent downstream salvage jobs and new wave dispatches after cancellation.
-"""
+"""Production scheduling and isolation contracts; research is read-only."""
 import unittest
 from pathlib import Path
+ROOT=Path(__file__).resolve().parents[1]/".github"/"workflows"
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = ROOT / ".github" / "workflows"
-
-
-class WorkflowArchitectureTests(unittest.TestCase):
-    def test_only_three_active_workflow_files(self):
-        self.assertEqual(
-            {p.name for p in WORKFLOWS.glob("*.yml")},
-            {"self_play.yml", "train.yml", "deploy_pages.yml"},
-        )
-
-    def test_single_run_with_fifteen_workers_and_one_writer(self):
-        content = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
-        self.assertEqual(content.count("  selfplay-workers:"), 1)
-        self.assertEqual(content.count("  upload:"), 1)
-        self.assertEqual(content.count("  continue-next-run:"), 1)
-        self.assertEqual(content.count("max-parallel: 15"), 1)
-        self.assertEqual(content.count("第16號棋譜上傳員"), 1)
-        self.assertIn("self-play-v4", content)
-        self.assertEqual(content.count("SEARCH_DEPTH="), 1)
-        self.assertIn("BUDGET=18000", content)
-        self.assertIn("needs.upload.result == 'success'", content)
-        self.assertIn("needs.selfplay-workers.result == 'success'", content)
-        self.assertIn("Production paused", content)
-
-    def test_worker16_extracts_artifacts_at_repository_root(self):
-        content = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
-        self.assertIn("pattern: selfplay-worker-*-${{ github.run_id }}", content)
-        downloader = content.split("- uses: actions/download-artifact@v4", 1)[1].split("- name: 列出第16號實際收到的完整棋譜", 1)[0]
-        self.assertIn("          path: .", downloader)
-        self.assertNotIn("          path: output_data", downloader)
-        self.assertIn("find output_data -maxdepth 1", content)
-        self.assertIn("find output_data -mindepth 2", content)
-        self.assertIn('CHECKPOINTS" -ne 15', content)
-        self.assertIn("VERIFIED all 15 worker Artifacts", content)
-        self.assertIn("HF upload or remote read-back failed", content)
-
-    def test_every_always_condition_checks_cancellation(self):
-        for file in WORKFLOWS.glob("*.yml"):
-            lines = file.read_text(encoding="utf-8").splitlines()
-            for lineno, line in enumerate(lines, 1):
+class WorkflowContractTests(unittest.TestCase):
+    def read(self,name): return (ROOT/name).read_text(encoding="utf-8")
+    def test_manual_only_production_and_explicit_continuation(self):
+        s=self.read("self_play.yml")
+        t=self.read("train.yml")
+        for text in (s,t):
+            self.assertIn("workflow_dispatch:",text)
+            self.assertNotRegex(text,r"(?m)^  (schedule|push):")
+            self.assertIn("github.ref == 'refs/heads/master'",text)
+        self.assertIn("default: false",s)
+        self.assertIn("inputs.continuous && !cancelled()",s)
+        self.assertIn("--ref master --field continuous=true",s)
+        self.assertNotIn("recovery-watchdog:",s)
+        self.assertNotIn("monthly-keepalive:",s)
+        self.assertIn("CURRENT_STATUS",s)
+    def test_writer_and_artifact_contract(self):
+        s=self.read("self_play.yml")
+        for required in ("max-parallel: 15","BUDGET=18000","needs: selfplay-workers",
+                         "needs.upload.result == 'success'","needs.selfplay-workers.result == 'success'",
+                         "pattern: selfplay-worker-*-${{ github.run_id }}","          path: .",
+                         "merge-multiple: true","CHECKPOINTS\" -ne 15",
+                         "VERIFIED all 15 worker Artifacts","HF upload or remote read-back failed",
+                         "resume_state/*.json","resume_state/*.memo","fail-fast: false","trap stop_child INT TERM"):
+            self.assertIn(required,s)
+        self.assertEqual(s.count("python -u src/workers/upload_batch.py"),1)
+        self.assertEqual(s.count("  upload:"),1)
+        self.assertNotIn("selfplay-wave-",s)
+    def test_training_data_and_promotion_gates(self):
+        t=self.read("train.yml")
+        for required in ("needs: hf-replay-consolidation","group: darkchess-hf-stage-writer",
+                         "new_replay_gate.py","replay_gate.py","validate_training_readiness.py",
+                         "git add models/research.nnue .github/training_last_snapshot.json",
+                         "steps.validate.outputs.passed == 'true'","steps.production_probe.outcome == 'success'",
+                         "steps.promote.outputs.promoted == 'true'"):
+            self.assertIn(required,t)
+        for retired in ("hf-backfill:","python-regression:","six-ply-profile:","depth-pilot:","bootstrap-research:","policy_train.py"):
+            self.assertNotIn(retired,t)
+    def test_no_automatic_evidence_deletion_or_cancelled_upload(self):
+        for p in ROOT.glob("*.yml"):
+            s=p.read_text(encoding="utf-8")
+            self.assertNotIn("prune_action_runs.py",s)
+            for line in s.splitlines():
                 if line.strip().startswith("if:") and "always()" in line:
-                    self.assertIn("!cancelled()", line, (file.name, lineno))
+                    self.assertIn("!cancelled()",line,(p.name,line))
+    def test_deployment_is_master_only(self):
+        self.assertIn("github.ref == 'refs/heads/master'",self.read("deploy_pages.yml"))
 
-    def test_manual_self_play_dispatch_avoids_duplicate_workers(self):
-        script = (WORKFLOWS / "train.yml").read_text(encoding="utf-8")
-        self.assertIn("if [ \"$ACTIVE\" -gt 0 ]; then", script)
-        self.assertIn("不重複啟動", script)
-        self.assertIn("gh workflow run self_play.yml", script)
-        self.assertNotIn("switch-old-selfplay:", script)
-        self.assertNotIn("OLD_RUN=40787827023", script)
-
-    def test_watchdog_respects_manual_cancel(self):
-        script = (WORKFLOWS / "self_play.yml").read_text(encoding="utf-8")
-        self.assertIn('LATEST_RESULT" = "cancelled"', script)
-        self.assertIn('CURRENT_STATUS" != "in_progress"', script)
-        self.assertIn('LATEST_RESULT" != "success"', script)
-        self.assertNotIn('cron: "17 */3 * * *"', script)
-        self.assertNotIn("recover_failed_uploads.py", script)
-        self.assertNotIn("  maintenance:", script)
-
-
-if __name__ == "__main__":
-    unittest.main()
+if __name__=="__main__": unittest.main()

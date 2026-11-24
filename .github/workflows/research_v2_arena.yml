@@ -48,7 +48,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         name: 保存實機對戰結果
-        if: always()
+        if: ${{ always() && !cancelled() }}
         with:
           name: v2-aa
           path: |

@@ -303,40 +303,51 @@ export class DarkChessEngine {
     return saveExact(value)
   }
   if (board.turn === Color.NONE) {
-    // Opening is a chance choice: the first revealer becomes the owner of
-    // whatever color is turned over. Evaluate the full requested horizon,
-    // never consult the referee's true face-down arrangement.
+    // First revealer owns the revealed color. The same public-information
+    // root logic serves both strict and time-limited modes.
     const total = board.remainingCounts.reduce((a, b) => a + b, 0)
-    const values: Record<number, number> = {...(limits.resumeRootValues ?? {})}
-    for (const move of ordered(board, available)) {
-      const key = moveKey(move)
-      if (Number.isFinite(values[key])) continue
-      let expected = 0
-      for (let index = 0; index < 14; index++) {
-        const count = board.remainingCounts[index]
-        if (count <= 0) continue
-        const child = board.clone()
-        child.hidden[move.from] = (index + 1) as Piece
-        if (!child.play(move)) throw new Error('illegal speculative first flip')
-        const ownColor = colorOf((index + 1) as Piece)
-        const value = search(child, maxDepth - 1, -Infinity, Infinity)
-        expected += count / total * (ownColor === Color.RED ? value : -value)
+    if (!total) throw new Error('Opening has no remaining hidden pieces')
+    const root = ordered(board, available)
+    let best = root[0]
+    let completedDepth = 0
+    let rootValues: Record<number, number> = {}
+    for (let depth = strict ? maxDepth : 1; depth <= maxDepth; depth++) {
+      const values: Record<number, number> = strict ? {...limits.resumeRootValues} : {}
+      let candidate = root[0]
+      try {
+        for (const move of root) {
+          const key = moveKey(move)
+          if (!Number.isFinite(values[key])) {
+            let expected = 0
+            for (let index = 0; index < 14; index++) {
+              const count = board.remainingCounts[index]
+              if (count <= 0) continue
+              const child = board.clone()
+              child.hidden[move.from] = (index + 1) as Piece
+              if (!child.play(move)) throw new Error('illegal speculative first flip')
+              const ownColor = colorOf((index + 1) as Piece)
+              const value = search(child, depth - 1, -Infinity, Infinity)
+              expected += count / total * (ownColor === Color.RED ? value : -value)
+            }
+            values[key] = expected
+            rootsDone++
+            limits.onRootCompleted?.(move, expected)
+            reportProgress()
+          }
+          if (values[key] > values[moveKey(candidate)]) candidate = move
+        }
+      } catch (error) {
+        if (!strict && error instanceof BudgetExceeded) break
+        throw error
       }
-      values[key] = expected
-      rootsDone++
-      limits.onRootCompleted?.(move, expected)
-      reportProgress()
+      best = candidate
+      rootValues = values
+      completedDepth = depth
     }
-    if (Object.keys(values).length !== available.length) {
-      if (strict) throw new Error('Opening search incomplete: refusing to move')
-      return {move: available[0], depth: 0, nodes,
-        elapsedMs: performance.now() - startedAt, rootValues: values, value: 0}
-    }
-    let best = available[0]
-    for (const move of available) if (values[moveKey(move)] > values[moveKey(best)]) best = move
+    if (strict && completedDepth !== maxDepth) throw new Error('Opening search incomplete: refusing to move')
     reportProgress(true)
-    return {move: best, depth: maxDepth, nodes,
-      elapsedMs: performance.now() - startedAt, rootValues: values, value: values[moveKey(best)]}
+    return {move: best, depth: completedDepth, nodes, elapsedMs: performance.now() - startedAt,
+      rootValues, value: rootValues[moveKey(best)] ?? 0}
   }
   if (strict) {
     // Directly evaluate exactly the required horizon. No shallower

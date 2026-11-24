@@ -1,374 +1,19 @@
 name: 模型訓練與升級
-run-name: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && '引擎品質檢查' || '模型訓練與升級' }}
-
-# Independent daily training is resilient to incomplete worker matrices.
-# Manual production runs may additionally trigger through workflow_run.
+run-name: 暗棋｜模型訓練與升級｜${{ github.run_number }}
 on:
-  workflow_dispatch:  # 暫停自動執行，僅保留手動啟動
-
+  workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
-  # Serialize training runs, but do not block self-play uploads. Consolidation
-  # deletes only the cutoff-bounded snapshot that it successfully verifies.
-  # Long-running full-depth verification has its own queue; ordinary CI
-  # pushes must not cancel a real CPU match in progress.
-  group: nnue-training-${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[hf-cleanup-now]') && 'hf-cleanup' || github.event_name == 'push' && contains(github.event.head_commit.message, '[verify-production-probe]') && 'production-depth-probe' || github.event_name == 'push' && !contains(github.event.head_commit.message, '[train-now]') && 'symmetry-ci' || 'production' }}
-  # Only quick CI can be superseded, never training or the production probe.
-  cancel-in-progress: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[hf-cleanup-now]') && !contains(github.event.head_commit.message, '[train-now]') && !contains(github.event.head_commit.message, '[verify-production-probe]') }}
-
+  group: nnue-training-production
+  cancel-in-progress: false
 jobs:
-  # One-off repair uses the production Worker-16 uploader and archived original
-  # games. This is not a fourth workflow and does not generate synthetic games.
-  hf-backfill:
-    name: 補傳歷史完整棋譜並驗證 HF 回讀
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[hf-backfill-2026-10-28]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      actions: write
-    concurrency:
-      group: darkchess-hf-stage-writer
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: 安裝與正式第16號完全相同的資料驗證與上傳套件
-        run: pip install numpy numba huggingface_hub
-      - name: 補傳 10/28 原始棋譜並逐批驗證 HF 讀回
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          BACKFILL_RUN_IDS: "40626539280 40656750983 40696580034 40745528713"
-        run: python -u src/workers/backfill_completed_runs.py
-      - name: 補傳完整棋譜後清理 HF 歷史並驗證保留檔案
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python -u src/workers/compact_hf_history.py
-
-      - name: 完成 HF 實際讀回後啟動新資料模型訓練
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Backfill] Verified HF upload finished; training workflow dispatched."
-
-  python-regression:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      actions: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: 先停止耗時的十二層舊對弈
-        if: ${{ contains(github.event.head_commit.message, '[停止12層]') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          RUN=40434371140
-          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '.status' || true)
-          if [ "$STATUS" != "completed" ]; then
-            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/cancel"
-            echo "已要求停止舊版十二層運算：$RUN"
-          fi
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: pip
-      - name: 安裝訓練與測試套件
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: 驗證對弈、搜尋、棋譜與訓練
-        run: python -m unittest discover -s test -p "test_*.py" -v
-      - name: 清理已完成的舊執行紀錄
-        if: ${{ always() && !cancelled() }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/prune_action_runs.py --scope all
-
-      - name: 準備共用引擎測試環境
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: 測試網頁與運算端的共用引擎
-        timeout-minutes: 15
-        run: |
-          cd frontend
-          npm ci
-          npm test -- --run
-          npm run build
-          cd ..
-          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-          SELF_PLAY_VALIDATE_OPENING=1 node .shared-build/src/workers/self_play_shared.js
-          BATCH_SIZE=1 NUM_BATCHES=1 SELF_PLAY_SMOKE_DEPTH=2 timeout 480s node .shared-build/src/workers/self_play_shared.js
-          python -u src/training/validate_replay.py --directory output_data --min-games 1
-          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
-          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 2 --depth 2 --node-budget 350 --max-seconds 1 --output /tmp/shared_sprt_smoke.json
-          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 4 --depth 2 --node-budget 350 --max-seconds 1 --resume /tmp/shared_sprt_smoke.json --output /tmp/shared_sprt_smoke.json
-          node .shared-build/src/workers/sprt_shared.js --champion validation_models/champion --challenger validation_models/champion --pairs 4 --depth 2 --node-budget 350 --max-seconds 1 --output /tmp/shared_sprt_fresh.json
-          python - <<'PY'
-          import json
-          resumed = json.load(open("/tmp/shared_sprt_smoke.json"))
-          fresh = json.load(open("/tmp/shared_sprt_fresh.json"))
-          assert resumed["games_played"] == 8
-          assert resumed["pair_scores"] == fresh["pair_scores"], "Resume must preserve exact paired sequence"
-          assert resumed["rng_state"] == fresh["rng_state"], "Resume lost random stream position"
-          assert 0 <= resumed["score_rate"] <= 1
-          assert resumed["decision"] != "ACCEPT_H1", "Identical model was wrongly promoted"
-          PY
-      - name: 依明確指令啟動正式自我對弈
-        if: ${{ !cancelled() && contains(github.event.head_commit.message, '[啟動自我對弈]') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          CURRENT_DEPTH="$(cat .github/production_depth.txt)"
-          case "$CURRENT_DEPTH" in
-            6|8) echo "啟動正式 NNUE CPU 自我對弈，完整搜尋深度 $CURRENT_DEPTH" ;;
-            *) echo "::error::Invalid production depth: $CURRENT_DEPTH"; exit 1 ;;
-          esac
-          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
-          if [ "$ACTIVE" -gt 0 ]; then
-            echo "已有 $ACTIVE 組自我對弈在執行，不重複啟動。"
-            exit 0
-          fi
-          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master --field continuous=true
-          echo "正式 NNUE CPU 自我對弈已派送，15 名運算員。"
-
-  six-ply-profile:
-    name: 六層選擇性搜尋效能試驗
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[六層量測]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: 安裝獨立棋譜驗證套件
-        run: pip install numpy numba
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: 建置正式共用搜尋器
-        run: |
-          npm ci --prefix frontend
-          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-      - name: 量測前十手及第十一手的六層搜尋進度
-        shell: bash
-        run: |
-          set -uo pipefail
-          test "$(cat .github/production_depth.txt)" = "6"
-          mkdir -p profile_state profile_output
-          # A completed 135-second profiling window is not an engine failure.
-          # Explicitly disable the runner's inherited bash -e for timeout.
-          set +e
-          timeout --signal=TERM --kill-after=5s 360s env \
-            SELF_PLAY_TARGET_DEPTH=6 SELF_PLAY_INNER_MOVE_LIMIT=2 SELF_PLAY_CHANCE_SAMPLES=3 WORKER_ID=profile \
-            RESUME_STATE_DIR=profile_state OUTPUT_DIR=profile_output \
-            BATCH_SIZE=1 NUM_BATCHES=1 \
-            node .shared-build/src/workers/self_play_shared.js 2>&1 | tee six-ply-profile.log
-          RESULT=${PIPESTATUS[0]}
-          set -e
-          echo "### 六層 CPU 搜尋量測" >> "$GITHUB_STEP_SUMMARY"
-          echo "Exit code: $RESULT (124 means expected profiling timeout)" >> "$GITHUB_STEP_SUMMARY"
-          echo '~~~' >> "$GITHUB_STEP_SUMMARY"
-          grep -E '\[Search Progress\]|\[Root Complete\]|\[Deep Search\]' six-ply-profile.log | tail -n 15 >> "$GITHUB_STEP_SUMMARY" || true
-          echo '~~~' >> "$GITHUB_STEP_SUMMARY"
-          if [ "$RESULT" -ne 0 ] && [ "$RESULT" -ne 124 ]; then
-            echo "::error::Six-ply worker crashed with $RESULT."
-            exit "$RESULT"
-          fi
-          if ! grep -Fq '[Search Progress]' six-ply-profile.log; then
-            echo "::warning::Worker did not reach a 30-second six-ply progress sample; inspect earlier plies."
-          fi
-          if ! grep -Fq '[Root Complete]' six-ply-profile.log; then
-            echo "::warning::No complete six-ply root move was produced during profiling."
-          fi
-          echo "### 完整棋譜合法性驗證" >> "$GITHUB_STEP_SUMMARY"
-          python -u src/training/validate_replay.py --directory profile_output --min-games 1
-          echo "Six-ply sampled self-play: one full legal game verified" >> "$GITHUB_STEP_SUMMARY"
-      - name: 保存六層效能紀錄
-        if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: six-ply-profile-${{ github.run_id }}
-          path: |
-            six-ply-profile.log
-            profile_state/*.json
-            profile_state/*.memo
-            profile_output/*.jsonl.gz
-          if-no-files-found: warn
-          retention-days: 7
-
-  depth-pilot:
-    name: 單運算員深度試跑
-    needs: python-regression
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[深度試跑]') && needs.python-regression.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: write
-      actions: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: 準備 CPU 運算環境
-        run: |
-          pip install numpy numba
-          npm ci --prefix frontend
-          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-      - name: 只驗證六層完整棋譜與搜尋進度
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(cat .github/production_depth.txt)" = "6"
-          mkdir -p state_6 output_6
-          set +e
-          timeout 2400s env SELF_PLAY_TARGET_DEPTH=6 WORKER_ID=pilot \
-            RESUME_STATE_DIR=state_6 OUTPUT_DIR=output_6 \
-            BATCH_SIZE=1 NUM_BATCHES=1 \
-            node .shared-build/src/workers/self_play_shared.js
-          RESULT=$?
-          set -e
-          echo "CPU pilot exit code: $RESULT" >> "$GITHUB_STEP_SUMMARY"
-          python -u src/training/validate_replay.py --directory output_6 --min-games 1
-          echo "Verified complete six-ply game: PASS" >> "$GITHUB_STEP_SUMMARY"
-      - name: 保存六層試跑棋譜與斷點
-        if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: six-ply-cpu-pilot-${{ github.run_id }}
-          path: |
-            state_6/*.json
-            state_6/*.memo
-            output_6/*.jsonl.gz
-          if-no-files-found: warn
-          retention-days: 7
-
-  verify-production-probe:
-    name: 真正六層完整棋局驗收
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[verify-production-probe]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 105
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: 安裝模型匯出環境
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: 編譯並執行正式六層換邊對弈
-        timeout-minutes: 90
-        run: |
-          set -euo pipefail
-          python -u src/training/export_nnue.py --input models/champion.nnue --output-dir validation_models/champion
-          npm ci --prefix frontend
-          ./frontend/node_modules/.bin/tsc -p src/workers/tsconfig.selfplay.json
-          node .shared-build/src/workers/sprt_shared.js \
-            --champion validation_models/champion \
-            --challenger validation_models/champion \
-            --pairs 1 --profile production --probe-only \
-            --output production_probe_results.json
-          python - <<'PY'
-          import json
-          r=json.load(open('production_probe_results.json'))
-          assert r['profile'] == 'production'
-          assert r['games_played'] == 2
-          assert r['production_full_depth_moves'] > 0
-          assert r['decision'] != 'ACCEPT_H1', 'Identical models cannot prove promotion'
-          print('Production-depth 6 completed matched games:', r['games_played'],
-                'completed six-ply searches:', r['production_full_depth_moves'])
-          PY
-      - name: 保存正式六層實測結果
-        if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: complete-depth-smoke-${{ github.run_id }}
-          path: production_probe_results.json
-          if-no-files-found: warn
-          retention-days: 30
-
-  bootstrap-research:
-    name: 初始化研究線並驗證模型回讀（非新訓練）
-    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[bootstrap-research]') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: 安裝研究模型完整性驗證套件
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-      - name: 以已驗證冠軍初始化研究模型並提交
-        run: |
-          set -euo pipefail
-          if [ -f models/research.nnue ]; then
-            python -u src/training/research_checkpoint.py --checkpoint models/research.nnue
-            echo "[Research] An existing research model was validated; no replacement."
-            exit 0
-          fi
-          python -u src/training/research_checkpoint.py --checkpoint models/champion.nnue
-          cp models/champion.nnue models/research.nnue
-          python -u src/training/research_checkpoint.py --checkpoint models/research.nnue
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/research.nnue
-          git commit -m "chore: initialize persistent research lineage from champion"
-          git fetch origin master
-          # Guard against bootstrapping from a stale champion or overwriting
-          # a research model produced by an overlapping real training run.
-          if [ "$(git show HEAD^:models/champion.nnue | sha256sum | cut -d' ' -f1)" != "$(git show origin/master:models/champion.nnue | sha256sum | cut -d' ' -f1)" ]; then
-            echo "::error::Champion changed since bootstrap began; refusing stale research seed."
-            exit 1
-          fi
-          if git cat-file -e origin/master:models/research.nnue 2>/dev/null; then
-            echo "::error::Research checkpoint already exists on master; refusing to overwrite."
-            exit 1
-          fi
-          git rebase origin/master
-          git push origin HEAD:master
-          echo "[Research] Initial checkpoint persisted in GitHub master. This is a champion copy, not a new training result."
-
   hf-replay-consolidation:
     name: HF 棋譜整併、歷史清理與回讀驗證
-    # A special [hf-cleanup-now] commit cleans existing history without training.
-    if: ${{ github.event_name != 'push' || contains(github.event.head_commit.message, '[train-now]') || contains(github.event.head_commit.message, '[hf-cleanup-now]') }}
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 85
-    # Serialize ALL HF mutations: self-play writer, historical backfill, and
+    # Serialize HF mutations: self-play writer and
     # training consolidation/squash. Never squash during a competing upload.
     concurrency:
       group: darkchess-hf-stage-writer
@@ -381,14 +26,12 @@ jobs:
       - name: 安裝 HF 棋譜與歷史清理工具
         run: pip install huggingface_hub
       - name: 確定訓練資料快照時間
-        if: ${{ !contains(github.event.head_commit.message, '[hf-cleanup-now]') }}
         shell: bash
         run: |
           NOW_EPOCH=$(date -u +%s)
           echo "CONSOLIDATION_CUTOFF_EPOCH=$NOW_EPOCH" >> "$GITHUB_ENV"
           echo "Snapshot cutoff: $(date -u -d "@$NOW_EPOCH" --iso-8601=seconds)"
       - name: 整併已上傳的完整棋譜並完成 HF 回讀驗證
-        if: ${{ !contains(github.event.head_commit.message, '[hf-cleanup-now]') }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python -u src/training/consolidate_buffer.py
@@ -399,9 +42,8 @@ jobs:
 
   train-and-promote:
     # Run CPU training after the short, serialized HF consolidation writer.
-    # Ordinary source pushes execute only regression CI.
     needs: hf-replay-consolidation
-    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[train-now]')
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 345
     permissions:
@@ -632,19 +274,6 @@ jobs:
           assert report["production_full_depth_moves"] > 0
           PY
 
-      - name: 訓練輔助走法預測模型
-        if: steps.validate.outputs.passed == 'true'
-        continue-on-error: true
-        env:
-          TORCH_NUM_THREADS: "1"
-        run: |
-          timeout --signal=TERM --kill-after=15s 600s python -u src/training/policy_train.py \
-            --cache-dir training_cache \
-            --champion models/champion.policy \
-            --challenger models/challenger.policy \
-            --epochs 1 \
-            --max-samples 4096
-
       - name: 保存模型驗證與訓練紀錄
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -657,7 +286,7 @@ jobs:
             symmetry_report.json
             models/challenger.nnue
             models/research.nnue
-            models/challenger.policy
+
           if-no-files-found: warn
           retention-days: 30
 
@@ -668,9 +297,6 @@ jobs:
           # Keep only the active champion in the repository. Do not
           # accumulate older weight snapshots in models/archive.
           mv models/challenger.nnue models/champion.nnue
-          if [ -f models/challenger.policy ]; then
-            mv models/challenger.policy models/champion.policy
-          fi
 
           python src/training/export_nnue.py \
             --input models/champion.nnue \
@@ -678,7 +304,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add models/champion.nnue frontend/public/models/
-          if [ -f models/champion.policy ]; then git add models/champion.policy; fi
           if ! git diff --staged --quiet; then
             git commit -m "chore: promote validated NNUE champion"
             # Training may have modified other tracked files (e.g. old
@@ -733,18 +358,8 @@ jobs:
         run: |
           echo "[Training] Need at least 1000 complete games before training."
           echo "[Training] No false failure, no false champion promotion."
-          echo "[Training] Next scheduled self-play will keep accumulating data."
+          echo "[Training] Automatic schedules remain paused."
 
-      - name: 清理已完成的舊執行紀錄
-        if: ${{ always() && !cancelled() }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/prune_action_runs.py --scope all
-
-      # Collect real metrics in the actual training job, not push-only CI.
-      # A separate worktree prevents uncommitted training scratch files from
-      # making git rebase/push fail; never overwrite a concurrently updated model.
       - name: 將當日實際訓練與對弈 KPI 寫回 Git
         if: ${{ always() && !cancelled() }}
         shell: bash

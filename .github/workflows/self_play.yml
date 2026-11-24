@@ -1,19 +1,14 @@
 name: 自動對弈與中斷接續
-run-name: ${{ github.event_name == 'workflow_dispatch' && '連續自我對弈' || github.event.schedule == '23 * * * *' && '每小時恢復檢查' || github.event.schedule == '43 3 1 * *' && '每月排程維護' || '自動對弈系統' }}
+run-name: 暗棋｜自我對弈｜${{ github.run_number }}
 
-# Exactly three visible active workflows; ALL games use shared DarkChessEngine:
-# 1. This file: one five-hour CPU matrix + verified HF upload + next run
-# 2. train.yml: training, tests and promotion
-# 3. deploy_pages.yml: GitHub Pages publishing
-# Cancellation: ALWAYS guard downstream work with !cancelled().
-# The scheduler must not restart after the most recent round was cancelled.
+# Manual only while V2 is under research. All production mutation is master-only.
 on:
   workflow_dispatch:
     inputs:
       continuous:
         description: "每個 Run 十五個運算員各跑五小時，再由第十六號驗證並上傳 HF"
         type: boolean
-        default: true
+        default: false
         required: false
 
 permissions:
@@ -21,13 +16,13 @@ permissions:
   actions: write
 
 concurrency:
-  group: self-play-v4-${{ github.event_name == 'workflow_dispatch' && 'round' || 'maintenance' }}
+  group: self-play-v4-round
   cancel-in-progress: false
 
 jobs:
   selfplay-workers:
     name: 對弈運算員 ${{ matrix.worker_id }}
-    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     timeout-minutes: 345
     strategy:
@@ -59,10 +54,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p resume_state
-          for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=15" --jq '.workflow_runs[].id'); do
+          for RUN in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?branch=master&event=workflow_dispatch&per_page=15" --jq '.workflow_runs[].id'); do
             [ "$RUN" = "$GITHUB_RUN_ID" ] && continue
             FOUND=0
-            for NAME in "selfplay-worker-$WORKER_ID-$RUN" "selfplay-wave-5-worker-$WORKER_ID-$RUN" "selfplay-wave-4-worker-$WORKER_ID-$RUN" "selfplay-wave-3-worker-$WORKER_ID-$RUN" "selfplay-wave-2-worker-$WORKER_ID-$RUN" "selfplay-wave-1-worker-$WORKER_ID-$RUN"; do
+            for NAME in "selfplay-worker-$WORKER_ID-$RUN"; do
               rm -rf prior_state
               if gh run download "$RUN" --name "$NAME" --dir prior_state --repo "$GITHUB_REPOSITORY" 2>/dev/null; then
                 if cp "prior_state/resume_state/worker_$WORKER_ID.json" "resume_state/worker_$WORKER_ID.json" 2>/dev/null; then
@@ -153,7 +148,7 @@ jobs:
     outputs:
       uploaded: ${{ steps.upload.outputs.uploaded }}
     needs: selfplay-workers
-    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' }}
+    if: ${{ always() && !cancelled() && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
@@ -270,7 +265,7 @@ jobs:
 
   continue-next-run:
     needs: [upload, selfplay-workers]
-    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && needs.upload.result == 'success' && needs.selfplay-workers.result == 'success' }}
+    if: ${{ inputs.continuous && !cancelled() && github.ref == 'refs/heads/master' && needs.upload.result == 'success' && needs.selfplay-workers.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -287,7 +282,7 @@ jobs:
             exit 0
           fi
           if [ "$UPLOADED" = "true" ]; then
-            LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=40" --jq '[.workflow_runs[] | select(.event != "push")][0].created_at // ""')
+            LAST_TRAIN=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/train.yml/runs?per_page=40" --jq '[.workflow_runs[] | select(.head_branch == "master")][0].created_at // ""')
             if [ -z "$LAST_TRAIN" ] || [ $(( $(date -u +%s) - $(date -u -d "$LAST_TRAIN" +%s) )) -ge 21600 ]; then
               gh workflow run train.yml --repo "$GITHUB_REPOSITORY" --ref master
               echo "[Training] New complete games verified; NNUE training dispatched."
@@ -295,71 +290,6 @@ jobs:
           else
             echo "[Self-play] No complete new games; saved checkpoints, no false training."
           fi
-          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
+          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master --field continuous=true
           echo "[Self-play] Started next independent 5-hour run; current run ends."
 
-  recovery-watchdog:
-    if: ${{ github.event_name == 'schedule' && github.event.schedule == '23 * * * *' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: master
-      - name: 清理已完成的舊執行紀錄
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/prune_action_runs.py --scope all
-      - name: 僅恢復未被手動取消的對弈
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # Manual cancellation means PAUSED, until the user dispatches a round.
-          # This persists without a separate repository variable or workflow.
-          if [ "$(cat .github/production_depth.txt 2>/dev/null)" != "6" ]; then
-            echo "[Watchdog] Production paused: CPU depth pilot has not passed."
-            exit 0
-          fi
-          RECENT=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?event=workflow_dispatch&per_page=1")
-          LATEST_STATUS=$(jq -r '.workflow_runs[0].status // ""' <<< "$RECENT")
-          LATEST_RESULT=$(jq -r '.workflow_runs[0].conclusion // ""' <<< "$RECENT")
-          if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" = "cancelled" ]; then
-            echo "::notice::Self-play deliberately cancelled; watchdog stays paused."
-            exit 0
-          fi
-          if [ "$LATEST_STATUS" = "completed" ] && [ "$LATEST_RESULT" != "success" ]; then
-            echo "::error::Last self-play failed ($LATEST_RESULT). Do not bypass a failed HF upload with a new run."
-            exit 1
-          fi
-          ACTIVE=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/self_play.yml/runs?per_page=100" \
-            --jq '[.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed")] | length')
-          if [ "$ACTIVE" -gt 0 ]; then
-            echo "[Watchdog] $ACTIVE round(s) already active; no duplicate dispatch."
-            exit 0
-          fi
-          gh workflow run self_play.yml --repo "$GITHUB_REPOSITORY" --ref master
-          echo "[Watchdog] Started one new self-play round."
-
-  monthly-keepalive:
-    if: ${{ github.event_name == 'schedule' && github.event.schedule == '43 3 1 * *' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: master
-          fetch-depth: 1
-      - name: 每月維持自動排程運作
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for attempt in 1 2 3; do
-            git fetch origin master
-            git checkout -B master origin/master
-            git commit --allow-empty -m "chore: monthly Actions schedule keepalive"
-            if git push origin master; then exit 0; fi
-          done
-          exit 1
